@@ -4,13 +4,13 @@
 #
 set -e
 
-git submodule update --init --recursive
-git submodule update --remote third-party/zenfs
+# git submodule update --init --recursive
+# git submodule update --remote third-party/zenfs
 
 BASE=$PWD
 OUTPUT=build
 WITH_BYTEDANCE_METRICS=OFF
-METRICS_PATH=$(pwd)/third-party/metrics2-cmake
+# METRICS_PATH=$(pwd)/third-party/metrics2-cmake
 
 if [ -z "$WITH_TESTS" ] || [ -z "${WITH_ZNS}" ]; then
   echo "usage: WITH_TESTS=OFF WITH_ZNS=OFF ./build.sh"

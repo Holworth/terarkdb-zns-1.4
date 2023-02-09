@@ -1432,13 +1432,9 @@ Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options) {
       "files in(%d, %d) out(%d) "
       "MB in(%.1f, %.1f) out(%.1f), read-write-amplify(%.1f) "
       "write-amplify(%.1f) %s, records in: %" PRIu64
-<<<<<<< HEAD
-      ", records dropped: %" PRIu64 " output_compression: %s\n",
-=======
       ", records dropped: %" PRIu64
       " output_compression: %s "
       "output_blob_compression: %s\n",
->>>>>>> d7c6cb160... remove zenfs
       cfd->GetName().c_str(), vstorage->LevelSummary(&tmp), bytes_read_per_sec,
       bytes_written_per_sec, compact_->compaction->output_level(),
       stats.num_input_files_in_non_output_levels,
@@ -1463,14 +1459,10 @@ Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options) {
          << compact_->num_input_records << "num_output_records"
          << compact_->num_output_records << "num_subcompactions"
          << compact_->sub_compact_states.size() << "output_compression"
-<<<<<<< HEAD
          << CompressionTypeToString(compact_->compaction->output_compression());
-=======
-         << CompressionTypeToString(compact_->compaction->output_compression())
-         << "output_blob_compression"
-         << CompressionTypeToString(
-                compact_->compaction->output_blob_compression());
->>>>>>> d7c6cb160... remove zenfs
+         // << "output_blob_compression"
+         // << CompressionTypeToString(
+         //        compact_->compaction->output_blob_compression());
 
   if (compaction_job_stats_ != nullptr) {
     stream << "num_single_delete_mismatches"

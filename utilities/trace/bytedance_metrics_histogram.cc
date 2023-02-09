@@ -48,9 +48,6 @@ const std::unordered_map<uint32_t, std::pair<std::string, uint32_t>>
         {ZENFS_OPEN_ZONES_COUNT, {"zenfs_open_zones", TYPE_GENERAL}},
         {ZENFS_RESETABLE_ZONES_COUNT, {"zenfs_resetable_zones", TYPE_GENERAL}},
         {ZENFS_ZONE_WRITE_THROUGHPUT,
-<<<<<<< HEAD
-         {"zenfs_zone_write_throughput", TYPE_THROUGHPUT}}};
-=======
          {"zenfs_zone_write_throughput", TYPE_THROUGHPUT}},
         {ZENFS_ZONE_WRITE_LATENCY, {"zenfs_zone_write_latency", TYPE_LATENCY}},
         {ZENFS_ZONE_GC_WRITE_LATENCY,
@@ -70,7 +67,6 @@ const std::unordered_map<uint32_t, std::pair<std::string, uint32_t>>
          {"zenfs_zone_gc_read_throughput", TYPE_THROUGHPUT}},
         {ZENFS_L0_IO_ALLOC_LATENCY,
          {"zenfs_l0_io_alloc_latency", TYPE_LATENCY}}};
->>>>>>> 314a3b767... Add garbage rate monitoring
 
 void BDZenFSMetrics::AddReporter(uint32_t label, uint32_t type) {
   assert(BDZenFSHistMap.find(label) != BDZenFSHistMap.end());

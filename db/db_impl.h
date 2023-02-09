@@ -797,8 +797,6 @@ class DBImpl : public DB {
 
 #endif  // NDEBUG
 
-<<<<<<< HEAD
-=======
   bool IsShuttingDown() {
     return shutting_down_.load(std::memory_order_acquire);
   }
@@ -806,7 +804,6 @@ class DBImpl : public DB {
   // warm up index cache when open the db
   void WarmUpDBIndexCache();
 
->>>>>>> 314a3b767... Add garbage rate monitoring
   // persist stats to column family "_persistent_stats"
   void PersistStats();
 
