@@ -26,6 +26,3 @@
 [submodule "third-party/metrics2-cmake"]
     path = third-party/metrics2-cmake
     url = git@code.byted.org:storage/metrics2-cmake.git
-[submodule "third-party/lavafs"]
-	path = third-party/lavafs
-	url = git@code.byted.org:storage/lavafs.git
