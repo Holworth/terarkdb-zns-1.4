@@ -274,7 +274,6 @@ Status BuildTable(
           return status;
         }
         blob_file->SetIOPriority(io_priority);
-        // blob_file->SetWriteLifeTimeHint(write_hint);
         // (kqh): Should set the lifetime hint of blob file to be extreme
         blob_file->SetWriteLifeTimeHint(Env::WriteLifeTimeHint::WLTH_EXTREME);
 

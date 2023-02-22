@@ -1323,6 +1323,9 @@ void DBImpl::ScheduleZNSGC() {
   }
   std::vector<BDZoneStat>& stat = zenfs_stat.zone_stats_;
 
+  // Report the write & read status of current disk
+  ZnsLog(kCyan, "%s\n", zenfs_stat.snapshot.summarize_info_);
+
   uint64_t number;
   FileType type;
 
@@ -1341,7 +1344,7 @@ void DBImpl::ScheduleZNSGC() {
   // May trigger force gc in two conditions:
   //  1. No enough free space left
   bool need_force_gc = free_ratio < force_free_r;
-  printf("[kqh] Current Free Capacity Ratio: %.4lf; Empty Zone Cnt=%lu\n",
+  ZnsLog(kRed, "[kqh] Current Free Capacity Ratio: %.4lf; Empty Zone Cnt=%lu\n",
          free_ratio, zenfs_statistics.empty_zone_cnt);
   if (need_force_gc) {
     // Force GC, release space until there is enough free space.
