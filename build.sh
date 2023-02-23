@@ -10,6 +10,12 @@ set -e
 BASE=$PWD
 OUTPUT=build
 WITH_BYTEDANCE_METRICS=OFF
+
+# checkout zenfs to baseline commit
+cd third-party/zenfs
+git checkout 5a9f7b
+cd ../..
+
 # METRICS_PATH=$(pwd)/third-party/metrics2-cmake
 
 if [ -z "$WITH_TESTS" ] || [ -z "${WITH_ZNS}" ]; then
