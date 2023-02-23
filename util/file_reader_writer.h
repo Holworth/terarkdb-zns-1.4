@@ -150,6 +150,7 @@ class WritableFileWriter {
   std::unique_ptr<WritableFile> writable_file_;
   std::string file_name_;
   AlignedBuffer buf_;
+  // (kqh): We may change the buffer size here to allow atomic write of file
   size_t max_buffer_size_;
   // Actually written data size can be used for truncate
   // not counting padding data

@@ -1920,8 +1920,12 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
         output_file_ended = false;
       }
     }
+
+    // Current output file should be ended
     if (output_file_ended) {
       CompactionIterationStats range_del_out_stats;
+      // FinishCompactionOutputFile() resets the builder of this sub_compact 
+      // work to be nullptr and a new builder will be created in the next loop
       status = FinishCompactionOutputFile(input_status, sub_compact,
                                           &range_del_agg, &range_del_out_stats,
                                           dependence, next_key);
@@ -2926,9 +2930,9 @@ Status CompactionJob::OpenCompactionOutputFile(
   //   sub_compact->compaction->output_level();
   //
   writable_file->SetFileLevel(sub_compact->compaction->output_level());
-  Status s = NewWritableFile(env_, fname, &writable_file, env_options_);
-  ZnsLog(Color::kBlue, ">>>> xzw >>>> Compacting file %s to level %d\n", fname.c_str(),
-         sub_compact->compaction->output_level());
+  Status s = NewWritableFile(env_, fname, &writable_file, env_options);
+  // ZnsLog(Color::kBlue, ">>>> xzw >>>> Compacting file %s to level %d\n", fname.c_str(),
+        // sub_compact->compaction->output_level());
   if (!s.ok()) {
     ROCKS_LOG_ERROR(
         db_options_.info_log,
@@ -3024,7 +3028,7 @@ Status CompactionJob::OpenCompactionOutputBlob(
   TEST_SYNC_POINT_CALLBACK("CompactionJob::OpenCompactionOutputFile",
                            &syncpoint_arg);
 #endif
-  // (kqh): Control the file type
+  // (kqh): Control the file type of compaction output file
   auto env_options = env_options_;
   env_options.db_file_type = DBFileType::kCompactionOutputFile;
   Status s = NewWritableFile(env_, fname, &writable_file, env_options);

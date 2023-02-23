@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <mutex>
 
+#include "fs/log.h"
 #include "monitoring/histogram.h"
 #include "monitoring/iostats_context_imp.h"
 #include "port/port.h"
@@ -279,7 +280,9 @@ Status WritableFileWriter::Append(const Slice& data) {
   } else {
     // Writing directly to file bypassing the buffer
     assert(buf_.CurrentSize() == 0);
-    s = WriteBuffered(src, left, true);
+    // (kqh): Change the autosync parameter to be false so that sync will 
+    // not be called
+    s = WriteBuffered(src, left, false);
   }
 
   TEST_KILL_RANDOM("WritableFileWriter::Append:1", rocksdb_kill_odds);
@@ -497,6 +500,8 @@ Status WritableFileWriter::WriteBuffered(const char* data, size_t size,
         old_size = next_write_offset_;
       }
 #endif
+      // ZnsLog(kBlue, "[WritableFileWriter::WriteBuffered(): File(%s) size=%llu]",
+      //        file_name_.c_str(), allowed);
       s = writable_file_->Append(Slice(src, allowed));
 #ifndef ROCKSDB_LITE
       if (ShouldNotifyListeners()) {
