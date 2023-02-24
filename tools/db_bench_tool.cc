@@ -2334,7 +2334,7 @@ class Benchmark {
   int64_t readwrites_;
   int64_t merge_keys_;
   bool report_file_operations_;
-  enum YCSBBenchmarkType { YCSB_A, YCSB_B, YCSB_C, YCSB_NONE };
+  enum YCSBBenchmarkType { YCSB_LOAD, YCSB_A, YCSB_B, YCSB_C, YCSB_NONE };
   struct BenchmarkProperty {
     double update_prop;
     double read_prop;
@@ -2346,6 +2346,8 @@ class Benchmark {
 
   BenchmarkProperty GetYCSBBenchProperty(YCSBBenchmarkType type) {
     switch (type) {
+      case YCSB_LOAD:
+        return {1.0, 0.0, 0.0, 0.0};
       case YCSB_A:
         return {0.5, 0.5, 0.0, 0.0};
       case YCSB_B:
@@ -2980,6 +2982,9 @@ class Benchmark {
         method = &Benchmark::ReadSequential;
         num_threads = 1;
         reads_ = num_;
+      } else if (name == "ycsb_load") {
+        method = &Benchmark::YCSBBenchmarkLoad;
+        ycsb_type_ = YCSB_LOAD;
       } else if (name == "ycsb_a") {
         method = &Benchmark::YCSBBenchmarkA;
         ycsb_type_ = YCSB_A;
@@ -3180,6 +3185,9 @@ class Benchmark {
           RunBenchmark(num_threads, name, method);
         }
 
+        // db_.db->GetEnv()->GetFileSystem().Dump();
+        // db_.db->GetEnv()->Dump();
+
         if (num_repeat > 1) {
           printf("Running benchmark for %d times\n", num_repeat);
         }
@@ -3217,6 +3225,7 @@ class Benchmark {
                   ->ToString()
                   .c_str());
     }
+    db_.db->GetEnv()->Dump();
   }
 
  private:
@@ -4316,7 +4325,7 @@ class Benchmark {
         }
       }
     }
-    printf("[TID] %llu Finish Looping\n", std::this_thread::get_id());
+    std::cout << "[TID] " << std::this_thread::get_id() << " Finish Looping\n";
 
     char msg[100];
     snprintf(msg, sizeof(msg), "(%" PRIu64 " of %" PRIu64 " found)\n", found,
@@ -4324,13 +4333,15 @@ class Benchmark {
     thread->stats.AddBytes(bytes);
     thread->stats.AddMessage(msg);
 
-    printf("[Tid %llu] %s", std::this_thread::get_id(), msg);
+    std::cout << "[TID] " << std::this_thread::get_id() << " " << msg;
 
     if (FLAGS_perf_level > TERARKDB_NAMESPACE::PerfLevel::kDisable) {
       thread->stats.AddMessage(std::string("PERF_CONTEXT:\n") +
                                get_perf_context()->ToString());
     }
   }
+
+  void YCSBBenchmarkLoad(ThreadState* thread) { DoYCSBBenchmark(thread, YCSB_LOAD); }
 
   void YCSBBenchmarkA(ThreadState* thread) { DoYCSBBenchmark(thread, YCSB_A); }
 

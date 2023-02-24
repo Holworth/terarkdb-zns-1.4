@@ -220,6 +220,9 @@ class FileSystem {
   // The result of Default() belongs to rocksdb and must never be deleted.
   static std::shared_ptr<FileSystem> Default();
 
+  // This method is just for ZenFS to report the stats
+  virtual void Dump() = 0;
+
   // Handles the event when a new DB or a new ColumnFamily starts using the
   // specified data paths.
   //
@@ -1127,6 +1130,10 @@ class FileSystemWrapper : public FileSystem {
   ~FileSystemWrapper() override {}
 
   const char* Name() const override { return target_->Name(); }
+
+  void Dump() override {
+    target_->Dump();
+  }
 
   // Return the target to which this Env forwards all calls
   FileSystem* target() const { return target_.get(); }

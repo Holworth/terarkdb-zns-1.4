@@ -194,6 +194,10 @@ class ZenfsEnv : public EnvWrapper {
     return NewZenFS(&fs_, zdb_path, metrics);
   }
 
+  void Dump() override {
+    fs_->Dump();
+  }
+
   // Return the target to which this Env forwards all calls
   Env* target() const { return target_; }
 

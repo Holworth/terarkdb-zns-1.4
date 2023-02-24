@@ -176,6 +176,12 @@ class Env {
   // The result of Default() belongs to rocksdb and must never be deleted.
   static Env* Default();
 
+  // report file system stats, this is used just for ZenFS
+  virtual void Dump() {
+    printf("Fall in default implementation\n");
+    return;
+  };
+
   // See FileSystem::RegisterDbPaths.
   virtual Status RegisterDbPaths(const std::vector<std::string>& /*paths*/) {
     return Status::OK();

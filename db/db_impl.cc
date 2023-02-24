@@ -645,7 +645,6 @@ void DBImpl::CancelAllBackgroundWork(bool wait) {
 
 Status DBImpl::CloseHelper() {
   console_runner_.closing_ = true;
-
   // Guarantee that there is no background error recovery in progress before
   // continuing with the shutdown
   mutex_.Lock();
@@ -1191,6 +1190,7 @@ void DBImpl::ScheduleZNSStatusReporter() {
   printf(
       "[Schedule GC Count: %d][Force GC Count: %d][Compact Zone Count: %d]\n",
       schedule_gc_count, force_gc_count, compact_zone_count);
+  printf("%s\n", zenfs_stat.snapshot_.summarize_info_.c_str());
 }
 
 void DBImpl::PickMigrationZone(const std::vector<BDZoneStat>& zone_stat,
