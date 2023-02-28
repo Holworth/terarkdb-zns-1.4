@@ -59,6 +59,10 @@ public:
     return (double)wp / total;
   }
 
+  uint64_t OccupySize() const {
+    return wp - start_position;
+  }
+
   uint64_t FakeID() const { return start_position; }
   uint64_t ZoneId() const { return id; }
 

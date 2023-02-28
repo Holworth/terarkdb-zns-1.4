@@ -823,11 +823,15 @@ class DBImpl : public DB {
     uint64_t total = 0;
     uint64_t empty_zone_cnt = 0;
     uint64_t reclaim = 0;
+    uint64_t occupy = 0;
   };
 
   // Get Current ZenFS Statistics
   ZenFSStatisticsStatus GetZenFSStatistics(const BDZenFSStat& zenfs_stat);
 
+  //====================================================================
+  // Implementation of naive ZenFS Garbage collection
+  //====================================================================
   // schedule Metrics Reporter background.
   void ScheduleMetricsReporter();
   // schedule GC by polling ZNS zone status
@@ -839,9 +843,10 @@ class DBImpl : public DB {
                          std::set<uint64_t>* picked_zones);
   // (kqh): Do Compaction work for a zone to reclaim the free space
   void MaybeDoZoneCompaction();
-  int force_gc_count = 0;
-  int schedule_gc_count = 0;
-  int compact_zone_count = 0;
+  int force_gc_count_ = 0;
+  int schedule_gc_count_ = 0;
+  int regular_gc_count_ = 0;
+  int compact_zone_count_ = 0;
 #endif
 
  protected:
