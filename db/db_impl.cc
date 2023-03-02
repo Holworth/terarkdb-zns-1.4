@@ -1307,6 +1307,7 @@ void DBImpl::ScheduleZNSGC() {
 #define ZNS_GC
 #ifdef ZNS_GC
 
+  // A naive GC implementation using greedy strategy
   //
   // The ZNS GC operation releasing SSD space by:
   //

@@ -539,6 +539,7 @@ class ZenfsEnv : public EnvWrapper {
     ZenFSSnapshot snapshot;
     ZenFSSnapshotOptions options;
 
+    options.zbd_ = 1;
     options.zone_ = 1;
     options.zone_file_ = 1;
     options.log_garbage_ = 1;
