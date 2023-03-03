@@ -9,6 +9,9 @@
 
 #include "db/compaction_job.h"
 
+#include <cassert>
+
+#include "fs/log.h"
 #include "table/iterator_wrapper.h"
 
 #ifndef __STDC_FORMAT_MACROS
@@ -1460,9 +1463,9 @@ Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options) {
          << compact_->num_output_records << "num_subcompactions"
          << compact_->sub_compact_states.size() << "output_compression"
          << CompressionTypeToString(compact_->compaction->output_compression());
-         // << "output_blob_compression"
-         // << CompressionTypeToString(
-         //        compact_->compaction->output_blob_compression());
+  // << "output_blob_compression"
+  // << CompressionTypeToString(
+  //        compact_->compaction->output_blob_compression());
 
   if (compaction_job_stats_ != nullptr) {
     stream << "num_single_delete_mismatches"
@@ -1696,6 +1699,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       compaction_filter, shutting_down_, preserve_deletes_seqnum_,
       &rebuild_blobs_info.blobs));
   auto c_iter = sub_compact->c_iter.get();
+  // (ZNS): This is a compaction job, we need it gathers the obsolete
+  // information. Set the flag before it seeks to the first element
+  c_iter->SetTrackObsoleteRecordsFlag(true);
   c_iter->SeekToFirst();
 
   struct SecondPassIterStorage {
@@ -1812,6 +1818,12 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     assert(sub_compact->builder != nullptr);
     assert(sub_compact->current_output() != nullptr);
     status = sub_compact->builder->Add(key, value);
+
+    // if (c_iter->IfTrackObsoleteRecords()) {
+    //   ZnsLog(kMagenta, "Add key: %llu, filno: %d", *(uint64_t*)(key.data()),
+    //          value.file_number());
+    // }
+
     if (!status.ok()) {
       break;
     }
@@ -1924,7 +1936,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     // Current output file should be ended
     if (output_file_ended) {
       CompactionIterationStats range_del_out_stats;
-      // FinishCompactionOutputFile() resets the builder of this sub_compact 
+      // FinishCompactionOutputFile() resets the builder of this sub_compact
       // work to be nullptr and a new builder will be created in the next loop
       status = FinishCompactionOutputFile(input_status, sub_compact,
                                           &range_del_agg, &range_del_out_stats,
@@ -1968,6 +1980,25 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       c_iter_stats.total_input_raw_key_bytes;
   sub_compact->compaction_job_stats.total_input_raw_value_bytes +=
       c_iter_stats.total_input_raw_value_bytes;
+
+  // (ZNS): The simple test to check if our counting on obsolete records works.
+  // However, to make this test pass, one prequisation is that we assume that
+  // all value in this compaction job are of type kTypeValueIndex.
+  //
+  // TODO: May deliver the information gathered from compaction to ZenFS
+  if (c_iter->IfTrackObsoleteRecords()) {
+    assert(sub_compact->num_input_records ==
+           c_iter_stats.SumDeprecatedRecordCount() +
+               sub_compact->num_output_records);
+    ZnsLog(kCyan,
+           "[Obsolete Records Num: %llu][Total Input Records Num: "
+           "%llu][Dropped Hidden Num: %llu]",
+           c_iter_stats.SumDeprecatedRecordCount(),
+           c_iter_stats.num_input_records, c_iter_stats.num_record_drop_hidden);
+
+    // TODO: Propagate the deprecation information to ZenFS
+    env_->UpdateCompactionIterStats(&c_iter_stats);
+  }
 
   RecordTick(stats_, FILTER_OPERATION_TOTAL_TIME,
              c_iter_stats.total_filter_time);
@@ -2931,8 +2962,8 @@ Status CompactionJob::OpenCompactionOutputFile(
   //
   writable_file->SetFileLevel(sub_compact->compaction->output_level());
   Status s = NewWritableFile(env_, fname, &writable_file, env_options);
-  // ZnsLog(Color::kBlue, ">>>> xzw >>>> Compacting file %s to level %d\n", fname.c_str(),
-        // sub_compact->compaction->output_level());
+  // ZnsLog(Color::kBlue, ">>>> xzw >>>> Compacting file %s to level %d\n",
+  // fname.c_str(), sub_compact->compaction->output_level());
   if (!s.ok()) {
     ROCKS_LOG_ERROR(
         db_options_.info_log,

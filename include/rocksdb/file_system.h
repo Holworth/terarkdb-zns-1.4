@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include "db/compaction_iteration_stats.h"
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
 #include "rocksdb/options.h"
@@ -590,6 +591,16 @@ class FileSystem {
 
   // If you're adding methods here, remember to add them to EnvWrapper too.
 
+  // (ZNS):
+  // Passing the compaction gathered deprecation information down the
+  // way to ZenFS. This method is only used by ZenFS. We do not designate
+  // this function to be a pure virtual function as this function only makes
+  // sense at the presence of ZenFS. We provide a naive implementation
+  // for all derivative class except for ZenFS. Another specialized
+  // implementation in ZenFS is required.
+  virtual void UpdateCompactionIterStats(
+      const CompactionIterationStats* iter_stat){};
+
  private:
   void operator=(const FileSystem&);
 };
@@ -999,7 +1010,7 @@ class FSWritableFile {
    * from the DB to the FS.
    *
    * We do not use the class FileOptions because the file level is not visible
-   * to FileOptions when its instances are created. 
+   * to FileOptions when its instances are created.
    */
   uint64_t file_level_;
 };
@@ -1131,9 +1142,7 @@ class FileSystemWrapper : public FileSystem {
 
   const char* Name() const override { return target_->Name(); }
 
-  void Dump() override {
-    target_->Dump();
-  }
+  void Dump() override { target_->Dump(); }
 
   // Return the target to which this Env forwards all calls
   FileSystem* target() const { return target_.get(); }

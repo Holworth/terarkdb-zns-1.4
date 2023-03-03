@@ -5,7 +5,11 @@
 
 #include "db/compaction_iterator.h"
 
+#include <cstdint>
+
+#include "db/dbformat.h"
 #include "db/snapshot_checker.h"
+#include "fs/log.h"
 #include "port/likely.h"
 #include "rocksdb/listener.h"
 #include "rocksdb/terark_namespace.h"
@@ -339,6 +343,11 @@ void CompactionIterator::NextFromInput() {
   at_next_ = false;
   valid_ = false;
 
+  // if (IfTrackObsoleteRecords()) {
+  //   ZnsLog(kRed, "Before Parsed: Current Parsed Type: %d, fileno: %llu",
+  //          ikey_.type, value_.file_number());
+  // }
+
   while (!valid_ && input_->Valid() && !IsShuttingDown()) {
     key_ = input_->key();
 
@@ -382,6 +391,11 @@ void CompactionIterator::NextFromInput() {
     // merge_helper_->compaction_filter_skip_until_.
     Slice skip_until;
 
+    // if (IfTrackObsoleteRecords()) {
+    //   ZnsLog(kRed, "Current Parsed Type: %d, fileno: %llu", ikey_.type,
+    //          value_.file_number());
+    // }
+
     // Check whether the user key changed. After this if statement current_key_
     // is a copy of the current input key (maybe converted to a delete by the
     // compaction filter). ikey_.user_key is pointing to the copy.
@@ -400,11 +414,23 @@ void CompactionIterator::NextFromInput() {
           (snapshot_checker_ == nullptr ||
            snapshot_checker_->IsInSnapshot(ikey_.sequence, kMaxSequenceNumber));
 
+      // Encountering a new key, update its file number to internal state
+      if (ikey_.type == kTypeValueIndex && IfTrackObsoleteRecords()) {
+        auto fileno = value_.file_number();
+        assert(fileno != -1);
+        latest_valid_fileno_ = fileno;
+      }
+
       // Apply the compaction filter to the first committed version of the user
       // key.
       if (current_key_committed_) {
         InvokeFilterIfNeeded(&need_skip, &skip_until);
       }
+
+      // if (IfTrackObsoleteRecords()) {
+      //   ZnsLog(kRed, "New User Key: Parsed Type: %d, fileno: %llu", ikey_.type,
+      //          value_.file_number());
+      // }
     } else {
       // Update the current key to reflect the new sequence number/type without
       // copying the user key.
@@ -415,6 +441,14 @@ void CompactionIterator::NextFromInput() {
       key_ = current_key_.GetInternalKey();
       value_ = input_.value(current_key_.GetUserKey(), &value_meta_);
       ikey_.user_key = current_key_.GetUserKey();
+
+      // Update the deprecation counter 
+      if (IfTrackObsoleteRecords() && ikey_.type == kTypeValueIndex) {
+        auto fileno = value_.file_number();
+        assert(fileno != (uint64_t)-1);
+        auto edge = std::make_pair(latest_valid_fileno_, fileno);
+        iter_stats_.deprecated_count[edge] += 1;
+      }
 
       // Note that newer version of a key is ordered before older versions. If a
       // newer version of a key is committed, so as the older version. No need
@@ -429,6 +463,12 @@ void CompactionIterator::NextFromInput() {
           InvokeFilterIfNeeded(&need_skip, &skip_until);
         }
       }
+
+      // if (IfTrackObsoleteRecords()) {
+      //   ZnsLog(kRed,
+      //          "Same User Key, New Sequence: Parsed Type: %d, fileno: %llu",
+      //          ikey_.type, value_.file_number());
+      // }
     }
 
     if (UNLIKELY(!current_key_committed_)) {
@@ -449,6 +489,10 @@ void CompactionIterator::NextFromInput() {
         visible_at_tip_
             ? earliest_snapshot_
             : findEarliestVisibleSnapshot(ikey_.sequence, &prev_snapshot);
+
+    // if (IfTrackObsoleteRecords()) {
+    //   ZnsLog(kBlue, "NeedSkip: %d", need_skip);
+    // }
 
     if (need_skip) {
       // This case is handled below.
@@ -609,6 +653,10 @@ void CompactionIterator::NextFromInput() {
       ++iter_stats_.num_record_drop_hidden;  // (A)
       value_.reset();
       input_->Next();
+      // if (IfTrackObsoleteRecords()) {
+      //   ZnsLog(kBlue, "[Last Snapshot: %llu, CurrentUserKeySnapshot: %llu]",
+      //          last_snapshot, current_user_key_snapshot_);
+      // }
     } else if (compaction_ != nullptr && ikey_.type == kTypeDeletion &&
                ikey_.sequence <= earliest_snapshot_ &&
                (snapshot_checker_ == nullptr ||
@@ -724,13 +772,23 @@ void CompactionIterator::NextFromInput() {
         input_->Next();
       } else {
         valid_ = true;
+        // if (IfTrackObsoleteRecords()) {
+        //   ZnsLog(kBlue, "Set valid_ to be true");
+        // }
       }
     }
+    // if (IfTrackObsoleteRecords()) {
+    //   ZnsLog(kRed, "Finish One Run,file number: %llu", value_.file_number());
+    // }
 
     if (need_skip) {
       input_->Seek(skip_until);
     }
   }
+
+  // if (IfTrackObsoleteRecords()) {
+  //   ZnsLog(kRed, "Finish Loop,file number: %llu", value_.file_number());
+  // }
 
   if (!valid_ && IsShuttingDown()) {
     status_ = Status::ShutdownInProgress();
@@ -853,6 +911,9 @@ void CompactionIterator::PrepareOutput() {
     // Make tests happy
     zero_sequence();
   }
+  // if (IfTrackObsoleteRecords()) {
+  //   ZnsLog(kRed, "PrepareOutput: File Number: %llu\n", value_.file_number());
+  // }
 }
 
 inline SequenceNumber CompactionIterator::findEarliestVisibleSnapshot(

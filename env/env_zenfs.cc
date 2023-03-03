@@ -1,3 +1,4 @@
+#include "db/compaction_iteration_stats.h"
 #include "fs/metrics.h"
 #include "fs/snapshot.h"
 #include "rocksdb/env.h"
@@ -194,8 +195,11 @@ class ZenfsEnv : public EnvWrapper {
     return NewZenFS(&fs_, zdb_path, metrics);
   }
 
-  void Dump() override {
-    fs_->Dump();
+  void Dump() override { fs_->Dump(); }
+
+  void UpdateCompactionIterStats(
+      const CompactionIterationStats* iter_stat) override {
+    fs_->UpdateCompactionIterStats(iter_stat);
   }
 
   // Return the target to which this Env forwards all calls
@@ -516,7 +520,7 @@ class ZenfsEnv : public EnvWrapper {
     assert(avail_size);
     assert(used_size);
     assert(zen_fs != nullptr);
-    if(zen_fs == nullptr) {
+    if (zen_fs == nullptr) {
       *total_size = 0;
       *avail_size = 0;
       *used_size = 0;

@@ -110,6 +110,10 @@ class CompactionIterator {
   // REQUIRED: SeekToFirst() has been called.
   void Next();
 
+  void SetTrackObsoleteRecordsFlag(bool flag) {
+    track_obsolete_records_flag_ = flag;
+  }
+
   // Getters
   const Slice& key() const { return key_; }
   const LazyBuffer& value() const { return value_; }
@@ -119,6 +123,7 @@ class CompactionIterator {
   const Slice& user_key() const { return current_user_key_; }
   const CompactionIterationStats& iter_stats() const { return iter_stats_; }
   void SetFilterSampleInterval(size_t filter_sample_interval);
+  bool IfTrackObsoleteRecords() { return track_obsolete_records_flag_; }
 
  private:
   // Processes the input stream to find the next output
@@ -228,6 +233,35 @@ class CompactionIterator {
   size_t filter_sample_interval_ = 64;
   size_t filter_hit_count_ = 0;
   const chash_set<uint64_t>* rebuild_blob_set_;
+
+  // (kqh):
+  // Track the occurrence of each key in this process or not.
+  // The tracked information will be used to generate hotness set and used
+  // as a guidance of our zone gc.
+  // In current design, key sst compaction generates no such extra information
+  // but we shall see if adding this feature improves the efficiency of hotness
+  // detection
+  bool track_key_occurrence_ = false;
+
+  // Track the number of deprecated records during this compaction or not
+  bool track_obsolete_records_flag_ = false;
+
+  // This is the file number of the value sst contains the latest value.
+  // It is only updated when it encounters a new input key. 
+  // For example, consider the following input sequence:
+  // 
+  //  <<key1, 100>, 20.sst>, <<key1, 20>, 10.sst>, <<key1, 5>, 7.sst>
+  //  <<key2, 120>, 17.sst>, <<key2, 40>, 9.sst>, <<key2, 7>, 8.sst>
+  // 
+  // Then the latest_valid_fileno_ will be updated to be 20.sst when it 
+  // first encounters the record <key1, 100>. And remain unchanged while
+  // reading the next 2 records. It changes to be 17.sst when it reads 
+  // <key2, 120>. 
+  // 
+  // Since the caller of CompactionIterator may discard the value_ field
+  // during their invocation, we can't read the latest file no via value_. 
+  // Thus an extra internal state are needed
+  uint64_t latest_valid_fileno_ = -1;
 
  public:
   bool IsShuttingDown() {

@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "db/compaction_iteration_stats.h"
 #include "rocksdb/status.h"
 #include "rocksdb/terark_namespace.h"
 #include "rocksdb/thread_status.h"
@@ -178,9 +179,15 @@ class Env {
 
   // report file system stats, this is used just for ZenFS
   virtual void Dump() {
-    printf("Fall in default implementation\n");
+    printf("Env::Dump(): Default implementation\n");
     return;
   };
+
+  virtual void UpdateCompactionIterStats(
+      const CompactionIterationStats* iter_stat) {
+    printf("Env::UpdateCompactionIterStats(): Default implementation\n");
+    return;
+  }
 
   // See FileSystem::RegisterDbPaths.
   virtual Status RegisterDbPaths(const std::vector<std::string>& /*paths*/) {
@@ -1712,7 +1719,8 @@ Status NewZenfsEnv(
     std::shared_ptr<MetricsReporterFactory> metrics_reporter_factory_);
 
 #ifdef WITH_ZENFS
-Status GetZbdDiskSpaceInfo(Env* env, uint64_t* total, uint64_t* free, uint64_t* used);
+Status GetZbdDiskSpaceInfo(Env* env, uint64_t* total, uint64_t* free,
+                           uint64_t* used);
 #endif
 
 }  // namespace TERARKDB_NAMESPACE
