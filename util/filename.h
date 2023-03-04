@@ -120,6 +120,7 @@ extern std::string OldInfoLogFileName(const std::string& dbname, uint64_t ts,
 
 static const std::string kOptionsFileNamePrefix = "OPTIONS-";
 static const std::string kTempFileNameSuffix = "dbtmp";
+static const std::string kSSTFileNameSuffixWithDot = ".sst";
 
 // Return a options file name given the "dbname" and file number.
 // Format:  OPTIONS-[number].dbtmp
