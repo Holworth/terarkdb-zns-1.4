@@ -1304,7 +1304,7 @@ void DBImpl::MaybeDoZoneCompaction() {
 }
 
 void DBImpl::ScheduleZNSGC() {
-#define ZNS_GC
+// #define ZNS_GC
 #ifdef ZNS_GC
 
   // A naive GC implementation using greedy strategy

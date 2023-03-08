@@ -33,6 +33,7 @@
 #include "rocksdb/io_status.h"
 #include "rocksdb/options.h"
 #include "rocksdb/table.h"
+#include "rocksdb/table_properties.h"
 #include "rocksdb/thread_status.h"
 
 namespace TERARKDB_NAMESPACE {
@@ -591,15 +592,27 @@ class FileSystem {
 
   // If you're adding methods here, remember to add them to EnvWrapper too.
 
+  //
   // (ZNS):
-  // Passing the compaction gathered deprecation information down the
+  // Passing the deprecation information gathered from compaction down the
   // way to ZenFS. This method is only used by ZenFS. We do not designate
   // this function to be a pure virtual function as this function only makes
   // sense at the presence of ZenFS. We provide a naive implementation
   // for all derivative class except for ZenFS. Another specialized
   // implementation in ZenFS is required.
+  //
   virtual void UpdateCompactionIterStats(
       const CompactionIterationStats* iter_stat){};
+
+  //
+  // (ZNS):
+  // Passing the table properties of one specific table down the way to ZenFS.
+  // Specifically, the number of records of this table is important
+  // Such information would be synchronized to the ZoneGCStats where the
+  // coresponding zone stores the file and used as a guidance of GC scheme.
+  //
+  virtual void UpdateTableProperties(const std::string& fname,
+                                     const TableProperties* tbl_prop){};
 
  private:
   void operator=(const FileSystem&);
@@ -776,14 +789,16 @@ class FSWritableFile {
         preallocation_block_size_(0),
         io_priority_(Env::IO_TOTAL),
         write_hint_(Env::WLTH_NOT_SET),
-        file_level_(uint64_t(-1)) {}
+        file_level_(uint64_t(-1)),
+        place_ftype_(PlacementFileType::NoType()) {}
 
   explicit FSWritableFile(const FileOptions& options)
       : last_preallocated_block_(0),
         preallocation_block_size_(0),
         io_priority_(Env::IO_TOTAL),
         write_hint_(Env::WLTH_NOT_SET),
-        file_level_(uint64_t(-1)) {}
+        file_level_(uint64_t(-1)),
+        place_ftype_(PlacementFileType::NoType()) {}
 
   virtual ~FSWritableFile() {}
 
@@ -934,6 +949,13 @@ class FSWritableFile {
   virtual uint64_t GetFileLevel() const { return file_level_; }
   virtual void SetFileLevel(uint64_t level) { file_level_ = level; }
 
+  virtual PlacementFileType GetPlacementFileType() const {
+    return place_ftype_;
+  }
+  virtual void SetPlacementFileType(PlacementFileType ftype) {
+    place_ftype_ = ftype;
+  }
+
   // Remove any kind of caching of data from the offset to offset+length
   // of this file. If the length is 0, then it refers to the end of file.
   // If the system is not caching the file contents, then this is a noop.
@@ -1013,6 +1035,8 @@ class FSWritableFile {
    * to FileOptions when its instances are created.
    */
   uint64_t file_level_;
+
+  PlacementFileType place_ftype_;
 };
 
 // A file abstraction for random reading and writing.

@@ -164,6 +164,11 @@ if(WITH_SNAPPY)
   message("[terarkdb] snappy include dir: ${snappy_INCLUDE_DIR}")
 endif()
 
+# Add libcuckoo
+get_target_property(cuckoo_INCLUDE_DIR cuckoo INCLUDE_DIRECTORIES)
+include_directories(${cuckoo_INCLUDE_DIR})
+message("[terarkdb] libcuckoo include dir: ${cuckoo_INCLUDE_DIR}")
+
 if(WITH_ZLIB)
   add_definitions(-DZLIB)
   get_target_property(zlib_INCLUDE_DIR zlib INCLUDE_DIRECTORIES)

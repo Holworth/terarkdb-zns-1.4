@@ -27,3 +27,6 @@
 # [submodule "third-party/metrics2-cmake"]
     # path = third-party/metrics2-cmake
     # url = git@code.byted.org:storage/metrics2-cmake.git
+[submodule "third-party/libcuckoo"]
+	path = third-party/libcuckoo
+	url = https://github.com/efficient/libcuckoo.git

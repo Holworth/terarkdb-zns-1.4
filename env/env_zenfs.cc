@@ -3,6 +3,7 @@
 #include "fs/snapshot.h"
 #include "rocksdb/env.h"
 #include "rocksdb/file_system.h"
+#include "rocksdb/table_properties.h"
 #include "rocksdb/terark_namespace.h"
 
 #ifdef WITH_ZENFS
@@ -202,6 +203,11 @@ class ZenfsEnv : public EnvWrapper {
     fs_->UpdateCompactionIterStats(iter_stat);
   }
 
+  void UpdateTableProperties(const std::string& fname,
+                             const TableProperties* tbl_prop) override {
+    fs_->UpdateTableProperties(fname, tbl_prop);
+  }
+
   // Return the target to which this Env forwards all calls
   Env* target() const { return target_; }
 
@@ -242,6 +248,7 @@ class ZenfsEnv : public EnvWrapper {
 
     if (*r) {
       file->SetFileLevel((*r)->GetFileLevel());
+      file->SetPlacementFileType((*r)->GetPlacementFileType());
     }
     // Generally, we should let our user to decide whether a file is WAL
     // or not. However, current TerarkDB environment doesn't provide such

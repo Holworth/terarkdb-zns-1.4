@@ -279,6 +279,11 @@ struct BlockBasedTableBuilder::Rep {
   uint64_t creation_time = 0;
   uint64_t oldest_key_time = 0;
 
+  // (kqh): This field will be passed to a concrete table builder (more
+  // specifically, BlockBasedTableBuilder in our senario). The table builder
+  // uses this field to update the zone occupacy status.
+  Env* env = nullptr;
+
   std::vector<std::unique_ptr<IntTblPropCollector>> table_properties_collectors;
 
   Rep(const TableBuilderOptions& builder_opt,
@@ -314,7 +319,8 @@ struct BlockBasedTableBuilder::Rep {
         column_family_id(_column_family_id),
         column_family_name(builder_opt.column_family_name),
         creation_time(builder_opt.creation_time),
-        oldest_key_time(builder_opt.oldest_key_time) {
+        oldest_key_time(builder_opt.oldest_key_time),
+        env(builder_opt.env) {
     if (table_options.index_type ==
         BlockBasedTableOptions::kTwoLevelIndexSearch) {
       p_index_builder_ = PartitionedIndexBuilder::CreateIndexBuilder(

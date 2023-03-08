@@ -386,7 +386,17 @@ Status FlushJob::WriteLevel0Table() {
       // (kqh) Pass the L0 information down to the File system layer
       auto env_options = env_options_;
       env_options.db_file_type = DBFileType::kFlushFile;
-      s = BuildTable(
+      // 
+      // (kqh): Replace the original BuildTable with our BuildPartitionTable to
+      // enable multi-stream write: Hot, Warm, HashPartition.
+      // 
+      // TODO: Currently we only enable this feature in a flush job, we may
+      // replace all original BuildTable invocation with our partition version
+      // if this implementation is error-free
+      // 
+
+      // s = BuildTable(
+      s = BuildPartitionTable(
           dbname_, versions_, db_options_.env, *cfd_->ioptions(),
           mutable_cf_options_, env_options, cfd_->table_cache(),
           c_style_callback(get_arena_input_iter), &get_arena_input_iter,

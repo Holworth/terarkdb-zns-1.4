@@ -909,6 +909,8 @@ void AssignEnvOptions(EnvOptions* env_options, const DBOptions& options) {
   env_options->writable_file_max_buffer_size =
       options.writable_file_max_buffer_size;
   env_options->allow_fallocate = options.allow_fallocate;
+  env_options->partition_num = options.partition_num;
+  env_options->enable_hot_separation = options.enable_hot_separation;
   options.env->SanitizeEnvOptions(env_options);
 }
 

@@ -23,11 +23,14 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "db/compaction_iteration_stats.h"
+#include "fs/log.h"
 #include "rocksdb/status.h"
+#include "rocksdb/table_properties.h"
 #include "rocksdb/terark_namespace.h"
 #include "rocksdb/thread_status.h"
 
@@ -83,6 +86,56 @@ enum class DBFileType {
   kManifest = 4,
 };
 
+// ZNS: This type is used to determine the type of a specific key. It can also
+// be used as the type of a concrete table. Originally, we tend to implement
+// this type using enum class. The enumeration includes: Hot, Warm, Cold and
+// Partition. We expects the Partition enum can be integrated with some
+// additional information, e.g. the partition id. However, we failed to find
+// a feasible approach for this expectation.
+// Instead, we choose to implement this type in a similar way of the Status
+// class.
+struct KeyType {
+  KeyType(uint64_t _code) : code(_code) {}
+  KeyType(const KeyType&) = default;
+  KeyType& operator=(const KeyType&) = default;
+
+  static KeyType NoType() { return KeyType(0); }
+  static KeyType Hot() { return KeyType(1ULL << 31); }
+  static KeyType Warm() { return KeyType(2ULL << 31); }
+  static KeyType Cold() { return KeyType(3ULL << 31); }
+  static KeyType Partition(uint32_t partition_id) {
+    return KeyType((4ULL << 31) | partition_id);
+  }
+
+  bool IsHot() const { return code == (1ULL << 31); }
+  bool IsWarm() const { return code == (2ULL << 31); }
+  bool IsCold() const { return code == (3ULL << 31); }
+  bool IsParition() const { return code >> 31 == 4ULL; }
+  uint32_t PartitionId() const { return (uint32_t)code; }
+
+  // For Debug
+  std::string ToString() const {
+    std::stringstream ss;
+    if (IsHot())
+      ss << "Hot";
+    else if (IsWarm())
+      ss << "Warm";
+    else if (IsCold())
+      ss << "Cold";
+    else if (IsParition())
+      ss << "Partition: " << PartitionId();
+    else
+      ss << "Unknown";
+
+    return ss.str();
+  }
+
+  uint64_t code;
+};
+
+// The File type for ZNS placement, which is the same as a KeyType
+using PlacementFileType = KeyType;
+
 // Options while opening a file to read/write
 struct EnvOptions {
   // Construct with default Options
@@ -137,8 +190,13 @@ struct EnvOptions {
   // If not nullptr, write rate limiting is enabled for flush and compaction
   RateLimiter* rate_limiter = nullptr;
 
-  // (kqh) Only used as a file creation hint
+  // (ZNS): Only used as a file creation hint
   DBFileType db_file_type = DBFileType::kNoType;
+
+  // (ZNS): These fields have the same meaning as their counterparts in
+  // DBOptions
+  uint64_t partition_num = 4;
+  bool enable_hot_separation = true;
 };
 
 class Env {
@@ -179,13 +237,19 @@ class Env {
 
   // report file system stats, this is used just for ZenFS
   virtual void Dump() {
-    printf("Env::Dump(): Default implementation\n");
+    ZnsLog(kCyan, "Env::Dump(): Default implementation\n");
     return;
   };
 
   virtual void UpdateCompactionIterStats(
       const CompactionIterationStats* iter_stat) {
-    printf("Env::UpdateCompactionIterStats(): Default implementation\n");
+    ZnsLog(kCyan, "Env::UpdateCompactionIterStats(): Default implementation\n");
+    return;
+  }
+
+  virtual void UpdateTableProperties(const std::string& fname,
+                                     const TableProperties* tbl_prop) {
+    ZnsLog(kCyan, "Env::UpdateTableProperties(): Default implementation\n");
     return;
   }
 
@@ -796,7 +860,8 @@ class WritableFile {
         io_priority_(Env::IO_TOTAL),
         write_hint_(Env::WLTH_NOT_SET),
         file_type_(DBFileType::kNoType),
-        file_level_(uint64_t(-1)) {}
+        file_level_(uint64_t(-1)),
+        place_ftype_(PlacementFileType::NoType()) {}
 
   explicit WritableFile(const EnvOptions& options)
       : last_preallocated_block_(0),
@@ -804,7 +869,8 @@ class WritableFile {
         io_priority_(Env::IO_TOTAL),
         write_hint_(Env::WLTH_NOT_SET),
         file_type_(DBFileType::kNoType),
-        file_level_((uint64_t(-1))) {}
+        file_level_((uint64_t(-1))),
+        place_ftype_(PlacementFileType::NoType()) {}
   // No copying allowed
   WritableFile(const WritableFile&) = delete;
   void operator=(const WritableFile&) = delete;
@@ -889,6 +955,12 @@ class WritableFile {
   virtual DBFileType GetFileType() const { return file_type_; }
   virtual void SetFileLevel(uint64_t level) { file_level_ = level; }
   virtual uint64_t GetFileLevel() const { return file_level_; }
+  virtual void SetPlacementFileType(PlacementFileType ftype) {
+    place_ftype_ = ftype;
+  }
+  virtual PlacementFileType GetPlacementFileType() const {
+    return place_ftype_;
+  }
 
   /*
    * Get the size of valid data in the file.
@@ -980,6 +1052,7 @@ class WritableFile {
   Env::WriteLifeTimeHint write_hint_;
   DBFileType file_type_;
   uint64_t file_level_;
+  PlacementFileType place_ftype_;
 };
 
 // A file abstraction for random reading and writing.

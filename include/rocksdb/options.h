@@ -1092,6 +1092,15 @@ struct DBOptions {
   double zenfs_low_gc_ratio = 0.25;
   double zenfs_high_gc_ratio = 0.6;
   double zenfs_force_gc_ratio = 0.9;
+
+  // (ZNS): Used to designate the number of partitions constructed in ZenFS. 
+  // This partition number can not be too big as we need to assign at least 
+  // one active zone token for each partition while ZNS has a limitation on 
+  // the number of activated zone. We guess 4 might be a reasonable value
+  // of this parameter. 
+  uint64_t partition_num = 4;
+
+  bool enable_hot_separation = true;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)

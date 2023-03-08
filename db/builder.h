@@ -55,7 +55,8 @@ TableBuilder* NewTableBuilder(
     const CompressionOptions& compression_opts, int level,
     double compaction_load, const std::string* compression_dict = nullptr,
     bool skip_filters = false, uint64_t creation_time = 0,
-    uint64_t oldest_key_time = 0, SstPurpose sst_purpose = kEssenceSst);
+    uint64_t oldest_key_time = 0, SstPurpose sst_purpose = kEssenceSst,
+    Env* env = nullptr);
 
 // Build a Table file from the contents of *iter.  The generated file
 // will be named according to number specified in meta. On success, the rest of
@@ -66,6 +67,38 @@ TableBuilder* NewTableBuilder(
 // @param column_family_name Name of the column family that is also identified
 //    by column_family_id, or empty string if unknown.
 extern Status BuildTable(
+    const std::string& dbname, VersionSet* versions_, Env* env,
+    const ImmutableCFOptions& options,
+    const MutableCFOptions& mutable_cf_options, const EnvOptions& env_options,
+    TableCache* table_cache,
+    InternalIterator* (*get_input_iter_callback)(void*, Arena&),
+    void* get_input_iter_arg,
+    std::vector<std::unique_ptr<FragmentedRangeTombstoneIterator>> (
+        *get_range_del_iters_callback)(void*),
+    void* get_range_del_iters_arg, std::vector<FileMetaData>* meta,
+    const InternalKeyComparator& internal_comparator,
+    const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
+        int_tbl_prop_collector_factories,
+    const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
+        int_tbl_prop_collector_factories_for_blob,
+    uint32_t column_family_id, const std::string& column_family_name,
+    std::vector<SequenceNumber> snapshots,
+    SequenceNumber earliest_write_conflict_snapshot,
+    SnapshotChecker* snapshot_checker, const CompressionType compression,
+    const CompressionOptions& compression_opts, bool paranoid_file_checks,
+    InternalStats* internal_stats, TableFileCreationReason reason,
+    EventLogger* event_logger = nullptr, int job_id = 0,
+    const Env::IOPriority io_priority = Env::IO_HIGH,
+    std::vector<TableProperties>* table_properties = nullptr, int level = -1,
+    double compaction_load = 0, const uint64_t creation_time = 0,
+    const uint64_t oldest_key_time = 0,
+    Env::WriteLifeTimeHint write_hint = Env::WLTH_NOT_SET);
+
+// ZNS: 
+// This function is used for building partition table during flush job. The 
+// memtable will be divided into three parts: Hot, Warm and Hash partitioned 
+// table according to the content of each key. 
+extern Status BuildPartitionTable(
     const std::string& dbname, VersionSet* versions_, Env* env,
     const ImmutableCFOptions& options,
     const MutableCFOptions& mutable_cf_options, const EnvOptions& env_options,

@@ -18,6 +18,7 @@
 #include "db/dbformat.h"
 #include "db/table_properties_collector.h"
 #include "options/cf_options.h"
+#include "rocksdb/env.h"
 #include "rocksdb/options.h"
 #include "rocksdb/table_properties.h"
 #include "rocksdb/terark_namespace.h"
@@ -86,7 +87,8 @@ struct TableBuilderOptions {
       const std::string* _compression_dict, bool _skip_filters,
       const std::string& _column_family_name, int _level,
       double _compaction_load, uint64_t _creation_time = 0,
-      int64_t _oldest_key_time = 0, SstPurpose _sst_purpose = kEssenceSst)
+      int64_t _oldest_key_time = 0, SstPurpose _sst_purpose = kEssenceSst,
+      Env* _env = nullptr)
       : ioptions(_ioptions),
         moptions(_moptions),
         internal_comparator(_internal_comparator),
@@ -100,7 +102,8 @@ struct TableBuilderOptions {
         compaction_load(_compaction_load),
         creation_time(_creation_time),
         oldest_key_time(_oldest_key_time),
-        sst_purpose(_sst_purpose) {}
+        sst_purpose(_sst_purpose),
+        env(_env) {}
   const ImmutableCFOptions& ioptions;
   const MutableCFOptions& moptions;
   const InternalKeyComparator& internal_comparator;
@@ -120,6 +123,10 @@ struct TableBuilderOptions {
   const SstPurpose sst_purpose;
   Slice smallest_user_key;
   Slice largest_user_key;
+  // (kqh): This field will be passed to a concrete table builder (more
+  // specifically, BlockBasedTableBuilder in our senario). The table builder
+  // uses this field to update the zone occupacy status.
+  Env* env;
 
   void PushIntTblPropCollectors(
       std::vector<std::unique_ptr<IntTblPropCollector>>* collectors,

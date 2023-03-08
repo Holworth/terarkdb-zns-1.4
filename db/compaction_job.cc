@@ -1499,7 +1499,8 @@ void CompactionJob::ProcessCompaction(SubcompactionState* sub_compact) {
       assert(false);
       break;
     case kGarbageCollection:
-      ProcessGarbageCollection(sub_compact);
+      // (ZNS): Disable RocksDB's GC and use ZenFS GC instead
+      // ProcessGarbageCollection(sub_compact);
       break;
     default:
       assert(false);
@@ -1677,6 +1678,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   }
 
   SubcompactionState::RebuildBlobsInfo rebuild_blobs_info;
+  // (ZNS): We need to disable the rebuild blob feature. One approach is to 
+  // assign the configurable parameter max_dependence_blob_overlap with an 
+  // extremely large value
   Status status = sub_compact->GetRebuildNeededBlobs(this, &rebuild_blobs_info);
   if (!status.ok()) {
     ROCKS_LOG_ERROR(
@@ -3031,7 +3035,8 @@ Status CompactionJob::OpenCompactionOutputFile(
       0 /* oldest_key_time */,
       sub_compact->compaction->compaction_type() == kMapCompaction
           ? kMapSst
-          : kEssenceSst));
+          : kEssenceSst,
+      env_));
   LogFlush(db_options_.info_log);
   return s;
 }
@@ -3122,7 +3127,7 @@ Status CompactionJob::OpenCompactionOutputBlob(
       sub_compact->compaction->output_compression(),
       sub_compact->compaction->output_compression_opts(), -1 /* level */,
       c->compaction_load(), nullptr, true /* skip_filters */,
-      output_file_creation_time, 0 /* oldest_key_time */, kEssenceSst));
+      output_file_creation_time, 0 /* oldest_key_time */, kEssenceSst, env_));
   LogFlush(db_options_.info_log);
   return s;
 }
