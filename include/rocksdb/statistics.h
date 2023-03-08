@@ -281,6 +281,7 @@ enum Histograms : uint32_t {
   DB_GET = 0,
   DB_WRITE,
   COMPACTION_TIME,
+  KEY_COMPACTION_TIME,
   SUBCOMPACTION_SETUP_TIME,
   TABLE_SYNC_MICROS,
   COMPACTION_OUTFILE_SYNC_MICROS,
@@ -327,6 +328,9 @@ enum Histograms : uint32_t {
 
   // ZNS related
   ZNS_GC_MICRO,
+
+  // Time spent on ZonedBlockDeive::UpdateCompactionIterStats
+  ZNS_COMPACTION_ITER_STATS_UPDATE,
 
   HISTOGRAM_ENUM_MAX,
 };

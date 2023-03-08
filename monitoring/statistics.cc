@@ -147,6 +147,7 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
     {DB_GET, "rocksdb.db.get.micros"},
     {DB_WRITE, "rocksdb.db.write.micros"},
     {COMPACTION_TIME, "rocksdb.compaction.times.micros"},
+    {KEY_COMPACTION_TIME, "rocksdb.key_compaction.times.micros"},
     {SUBCOMPACTION_SETUP_TIME, "rocksdb.subcompaction.setup.times.micros"},
     {TABLE_SYNC_MICROS, "rocksdb.table.sync.micros"},
     {COMPACTION_OUTFILE_SYNC_MICROS, "rocksdb.compaction.outfile.sync.micros"},
@@ -180,6 +181,8 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
     {PICK_GARBAGE_COLLECTION_TIME, "rocksdb.pick.gc.micros"},
     {INSTALL_SUPER_VERSION_TIME, "rocksdb.install.super.version.micros"},
     {ZNS_GC_MICRO, "rocksdb.db.zns_gc.micros"},
+    {ZNS_COMPACTION_ITER_STATS_UPDATE,
+     "rocksdb.db.zns.compaction_iter_stats_update.micros"},
     {BUILD_VERSION_TIME, "rocksdb.build.version.micros"},
 };
 

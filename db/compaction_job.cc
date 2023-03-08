@@ -1511,6 +1511,8 @@ void CompactionJob::ProcessCompaction(SubcompactionState* sub_compact) {
 
 void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   assert(sub_compact != nullptr);
+  // Measurement of Key SST Compaction work
+  StopWatch s(env_, stats_, KEY_COMPACTION_TIME);
   ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
   CompactionRangeDelAggregator range_del_agg(&cfd->internal_comparator(),
                                              existing_snapshots_);
@@ -2000,7 +2002,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
            c_iter_stats.SumDeprecatedRecordCount(),
            c_iter_stats.num_input_records, c_iter_stats.num_record_drop_hidden);
 
-    // TODO: Propagate the deprecation information to ZenFS
+    // Monitoring the UpdateCompactionIterStats call
+    StopWatch s(env_, stats_, ZNS_COMPACTION_ITER_STATS_UPDATE);
     env_->UpdateCompactionIterStats(&c_iter_stats);
   }
 
