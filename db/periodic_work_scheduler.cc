@@ -46,21 +46,21 @@ void PeriodicWorkScheduler::Register(DBImpl* dbi,
                  kMicrosInSecond,
              kDefaultScheduleGCTTLPeriodSec * kMicrosInSecond);
 #if defined(WITH_ZENFS)
-  // timer->Add([dbi]() { dbi->ScheduleZNSGC(); },
-  //            GetTaskName(dbi, "schedule_gc_zns"),
-  //            initial_delay.fetch_add(1) % kDefaultScheduleZNSTTLPeriodSec *
-  //                kMicrosInSecond,
-  //            kDefaultScheduleZNSTTLPeriodSec * kMicrosInSecond);
+  timer->Add([dbi]() { dbi->ScheduleZNSGC(); },
+             GetTaskName(dbi, "schedule_gc_zns"),
+             initial_delay.fetch_add(1) % kDefaultScheduleZNSTTLPeriodSec *
+                 kMicrosInSecond,
+             kDefaultScheduleZNSTTLPeriodSec * kMicrosInSecond);
   timer->Add([dbi]() { dbi->ScheduleMetricsReporter(); },
              GetTaskName(dbi, "schedule_metrics_background_report"),
              initial_delay.fetch_add(1) % kDefaultScheduleZNSMetricsPeriodSec *
                  kMicrosInSecond,
              kDefaultScheduleZNSMetricsPeriodSec * kMicrosInSecond);
-  // timer->Add([dbi]() { dbi->ScheduleZNSStatusReporter(); },
-  //            GetTaskName(dbi, "schedule_zns_status_reporter"),
-  //            initial_delay.fetch_add(1) % kDefaultScheduleZNSTTLPeriodSec *
-  //                kMicrosInSecond,
-  //            kDefaultScheduleZNSTTLPeriodSec * kMicrosInSecond);
+  timer->Add([dbi]() { dbi->ScheduleZNSStatusReporter(); },
+             GetTaskName(dbi, "schedule_zns_status_reporter"),
+             initial_delay.fetch_add(1) % kDefaultScheduleZNSTTLPeriodSec *
+                 kMicrosInSecond,
+             kDefaultScheduleZNSTTLPeriodSec * kMicrosInSecond);
 #endif
 }
 

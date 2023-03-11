@@ -8,11 +8,13 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #pragma once
+#include <cstdint>
 #include <unordered_set>
 
 #include "db/version_edit.h"
 #include "options/cf_options.h"
 #include "rocksdb/compaction_filter.h"
+#include "rocksdb/env.h"
 #include "rocksdb/listener.h"
 #include "rocksdb/options.h"
 #include "rocksdb/terark_namespace.h"
@@ -77,6 +79,11 @@ enum CompactionType {
   kKeyValueCompaction = 0,
   kMapCompaction = 1,
   kGarbageCollection = 2,
+  kZNSGarbageCollection = 3,
+  kZNSHotGarbageCollection = 4,
+  kZNSWarmGarbageCollection = 5,
+  kZNSColdGarbageCollection = 6,
+  kZNSPartitionGarbageCollection = 7,
 };
 
 struct CompactionParams {
@@ -97,6 +104,9 @@ struct CompactionParams {
   double score = -1;
   bool partial_compaction = false;
   CompactionType compaction_type = kKeyValueCompaction;
+
+  // On ZNS, the placement_id is the partition id
+  uint64_t placement_id;
   SeparationType separation_type = kCompactionAutoRebuildBlob;
   std::vector<SelectedRange> input_range = {};
   CompactionReason compaction_reason = CompactionReason::kUnknown;
@@ -287,6 +297,8 @@ class Compaction {
   // CompactionType
   CompactionType compaction_type() const { return compaction_type_; }
 
+  uint64_t placement_id() const { return placement_id_; }
+
   // SeparationType
   SeparationType separation_type() const { return separation_type_; }
   void set_separation_type(SeparationType st) { separation_type_ = st; }
@@ -476,6 +488,9 @@ class Compaction {
 
   //
   const CompactionType compaction_type_;
+
+  //
+  uint64_t placement_id_;
 
   //
   SeparationType separation_type_;

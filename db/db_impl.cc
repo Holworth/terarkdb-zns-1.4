@@ -10,7 +10,9 @@
 
 #include <thread>
 
+#include "db/compaction.h"
 #include "fs/log.h"
+#include "rocksdb/file_system.h"
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
@@ -1303,10 +1305,106 @@ void DBImpl::MaybeDoZoneCompaction() {
   }
 }
 
-void DBImpl::ScheduleZNSGC() {
-// #define ZNS_GC
-#ifdef ZNS_GC
+// copied from compaction_picker.cc
+static uint32_t GetPathId(const ImmutableCFOptions& ioptions,
+                          const MutableCFOptions& mutable_cf_options,
+                          int level) {
+  uint32_t p = 0;
+  assert(!ioptions.cf_paths.empty());
 
+  // size remaining in the most recent path
+  uint64_t current_path_size = ioptions.cf_paths[0].target_size;
+
+  uint64_t level_size;
+  int cur_level = 0;
+
+  // max_bytes_for_level_base denotes L1 size.
+  // We estimate L0 size to be the same as L1.
+  level_size = mutable_cf_options.max_bytes_for_level_base;
+
+  // Last path is the fallback
+  while (p < ioptions.cf_paths.size() - 1) {
+    if (level_size <= current_path_size) {
+      if (cur_level == level) {
+        // Does desired level fit in this path?
+        return p;
+      } else {
+        current_path_size -= level_size;
+        if (cur_level > 0) {
+          if (ioptions.level_compaction_dynamic_level_bytes) {
+            // Currently, level_compaction_dynamic_level_bytes is ignored when
+            // multiple db paths are specified. https://github.com/facebook/
+            // rocksdb/blob/master/db/column_family.cc.
+            // Still, adding this check to avoid accidentally using
+            // max_bytes_for_level_multiplier_additional
+            level_size = static_cast<uint64_t>(
+                level_size * mutable_cf_options.max_bytes_for_level_multiplier);
+          } else {
+            level_size = static_cast<uint64_t>(
+                level_size * mutable_cf_options.max_bytes_for_level_multiplier *
+                mutable_cf_options.MaxBytesMultiplerAdditional(cur_level));
+          }
+        }
+        cur_level++;
+        continue;
+      }
+    }
+    p++;
+    current_path_size = ioptions.cf_paths[p].target_size;
+  }
+  return p;
+}
+
+void DBImpl::ScheduleZNSGC() {
+#define ZNS_GC
+#ifdef ZNS_GC
+  uint64_t partition_id = -1;
+  auto [gc_files_in_fs, gc_type] = env_->GetGCHintsFromFS(&partition_id);
+  if (gc_files_in_fs.empty()) {
+    // ZenFS does not want a GC;
+    return;
+  }
+
+  for (auto cfd : *versions_->GetColumnFamilySet()) {
+    uint64_t new_mark_count = 0;
+    uint64_t old_mark_count = 0;
+    if (!cfd->initialized() || cfd->IsDropped()) {
+      continue;
+    }
+    VersionStorageInfo* vstorage = cfd->current()->storage_info();
+
+    // Following code is from PickGarbageCollection
+    std::vector<CompactionInputFiles> inputs(1);
+    auto& input = inputs.front();
+    input.level = -1;
+
+    // XTODO:
+    //  Having the input files below, we can decide whether to create
+    //  a Compaction object by hand or just call the
+    //  CompactionPicker::CompactFiles. I'm currently not sure which way is
+    //  better. The PickGarbageCollection constructs Compaction objects by hand,
+    //  while the legacy ScheduleZNSGC calls CompactionPicker::CompactFiles
+    for (auto& meta : vstorage->LevelFiles(-1)) {
+      if (gc_files_in_fs.count(meta->fd.GetNumber()) > 0) {
+        input.files.push_back(meta);
+      }
+    }
+
+    auto path_id =
+        GetPathId(*cfd->ioptions(), *cfd->GetLatestMutableCFOptions(), 1);
+
+    auto compaction_option = CompactionOptions();
+
+    if (gc_type == GenericHotness::NoType) {
+      compaction_option.placement_id = partition_id;
+    }
+    compaction_option.hotness = gc_type;
+    auto compaction = cfd->compaction_picker()->CompactFiles(
+        compaction_option, inputs, -1, vstorage,
+        *cfd->GetLatestMutableCFOptions(), path_id);
+    vstorage->ComputeCompactionScore(*cfd->ioptions(),
+                                     *cfd->GetLatestMutableCFOptions());
+  }
   // A naive GC implementation using greedy strategy
   //
   // The ZNS GC operation releasing SSD space by:
@@ -1326,7 +1424,7 @@ void DBImpl::ScheduleZNSGC() {
   //  * In most time, a "Regular GC" task will be invoked: zones with certain
   //    garbage ratio (e.g. >= 70%) will be reclaimed
   //
-
+  /*
   TEST_SYNC_POINT("DBImpl:ScheduleZNSGC");
 
   ZnsLog(kGCColor, "[GC] Schedule ZNS GC Once tid=%zu",
@@ -1448,10 +1546,10 @@ void DBImpl::ScheduleZNSGC() {
     // MaybeDoZoneCompaction();
   }
 
+
   // (xzw): early return to skip compaction
   return;
 
-  /*
 
   // Overall free capacity ratio of disk.
   double free_r = double(free) / total;
@@ -1528,6 +1626,8 @@ void DBImpl::ScheduleZNSGC() {
       }
     }
   }
+
+  ==========================================================================
 
   auto mask = free_r < high_r ? FileMetaData::kMarkedFromFileSystemHigh
                               : FileMetaData::kMarkedFromFileSystem;

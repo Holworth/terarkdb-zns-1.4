@@ -1381,11 +1381,16 @@ struct CompactionOptions {
   // If > 0, it will replace the option in the CFOptions for this compaction.
   uint32_t max_subcompactions;
 
+  // ZNS:
+  GenericHotness hotness;
+  uint64_t placement_id;
+
   CompactionOptions()
       : compression(kSnappyCompression),
         separation_type(kCompactionTransToSeparate),
         output_file_size_limit(std::numeric_limits<uint64_t>::max()),
-        max_subcompactions(0) {}
+        max_subcompactions(0),
+        hotness(GenericHotness::NoType) {}
 };
 
 // For level based compaction, we can configure if we want to skip/force

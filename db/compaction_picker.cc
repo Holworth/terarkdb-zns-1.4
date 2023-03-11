@@ -9,6 +9,9 @@
 
 #include "db/compaction_picker.h"
 
+#include "db/compaction.h"
+#include "rocksdb/env.h"
+
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
 #endif
@@ -634,9 +637,26 @@ Compaction* CompactionPicker::CompactFiles(
 
   params.max_subcompactions = compact_options.max_subcompactions;
   params.manual_compaction = true;
-
+  params.placement_id = compact_options.placement_id;
   if (output_level == -1) {
+#ifndef WITH_ZENFS
     params.compaction_type = kGarbageCollection;
+#else
+    switch (compact_options.hotness) {
+      case GenericHotness::Hot:
+        params.compaction_type = kZNSHotGarbageCollection;
+        break;
+      case GenericHotness::Warm:
+        params.compaction_type = kZNSWarmGarbageCollection;
+        break;
+      case GenericHotness::Cold:
+        params.compaction_type = kZNSColdGarbageCollection;
+        break;
+      default:
+        params.compaction_type = kZNSPartitionGarbageCollection;
+        break;
+    }
+#endif
   }
 
   return RegisterCompaction(new Compaction(std::move(params)));

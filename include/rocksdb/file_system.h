@@ -26,6 +26,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "db/compaction_iteration_stats.h"
@@ -224,6 +225,17 @@ class FileSystem {
 
   // This method is just for ZenFS to report the stats
   virtual void Dump() = 0;
+
+  // This method is for ZenFS to transmit GC (compaction) information
+  // from the FS to the DB to reuse the compaction code
+  //
+  // Return value is a vector of file numbers indicating files to be
+  // garbage collected and a hotness tag
+  // 
+  // The input @out_args is used for users to offer user-defined
+  // information from the FS to the DB.
+  virtual std::pair<std::unordered_set<uint64_t>, GenericHotness>
+  GetGCHintsFromFS(void *out_args) = 0;
 
   // Handles the event when a new DB or a new ColumnFamily starts using the
   // specified data paths.
@@ -1167,6 +1179,11 @@ class FileSystemWrapper : public FileSystem {
   const char* Name() const override { return target_->Name(); }
 
   void Dump() override { target_->Dump(); }
+
+  std::pair<std::unordered_set<uint64_t>, GenericHotness> 
+  GetGCHintsFromFS(void *out_args) override {
+    return target_->GetGCHintsFromFS(out_args);
+  }
 
   // Return the target to which this Env forwards all calls
   FileSystem* target() const { return target_.get(); }

@@ -11,6 +11,7 @@
 
 #include <cassert>
 
+#include "db/compaction.h"
 #include "fs/log.h"
 #include "table/iterator_wrapper.h"
 
@@ -196,13 +197,50 @@ struct CompactionJob::SubcompactionState {
   }
 
   std::vector<Output> blob_outputs;
+  // the following two fields are used by both KeyValueCompaction
+  // and ZNSNonParititionGarbageCollection
   std::unique_ptr<WritableFileWriter> blob_outfile;
   std::unique_ptr<TableBuilder> blob_builder;
+
+  std::vector<Output> hot_blob_outputs;
+  std::unique_ptr<WritableFileWriter> hot_outfile;
+  std::unique_ptr<TableBuilder> hot_builder;
+  std::vector<Output> warm_blob_outputs;
+  std::unique_ptr<WritableFileWriter> warm_outfile;
+  std::unique_ptr<TableBuilder> warm_builder;
+  std::vector<Output> partition_blob_outputs;
+  std::unique_ptr<WritableFileWriter> partition_outfile;
+  std::unique_ptr<TableBuilder> partition_builder;
+
   Output* current_blob_output() {
     if (blob_outputs.empty()) {
       return nullptr;
     } else {
       return &blob_outputs.back();
+    }
+  }
+
+  Output* current_hot_blob_output() {
+    if (hot_blob_outputs.empty()) {
+      return nullptr;
+    } else {
+      return &hot_blob_outputs.back();
+    }
+  }
+
+  Output* current_warm_blob_output() {
+    if (warm_blob_outputs.empty()) {
+      return nullptr;
+    } else {
+      return &warm_blob_outputs.back();
+    }
+  }
+
+  Output* current_partition_blob_output() {
+    if (partition_blob_outputs.empty()) {
+      return nullptr;
+    } else {
+      return &partition_blob_outputs.back();
     }
   }
 
@@ -1502,6 +1540,17 @@ void CompactionJob::ProcessCompaction(SubcompactionState* sub_compact) {
       // (ZNS): Disable RocksDB's GC and use ZenFS GC instead
       // ProcessGarbageCollection(sub_compact);
       break;
+    case kZNSGarbageCollection:
+      // fall throughput
+      // Here we offer hotness hints to the comapction job, so that
+      // the compaction job can be aware of whether it is garbage
+      // collection in hot zones, or paritioned zones, or other zones
+    case kZNSHotGarbageCollection:
+    case kZNSWarmGarbageCollection:
+    case kZNSColdGarbageCollection:
+    case kZNSPartitionGarbageCollection:
+      ProcessZNSGarbageCollection(sub_compact);
+      break;
     default:
       assert(false);
       break;
@@ -1680,8 +1729,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   }
 
   SubcompactionState::RebuildBlobsInfo rebuild_blobs_info;
-  // (ZNS): We need to disable the rebuild blob feature. One approach is to 
-  // assign the configurable parameter max_dependence_blob_overlap with an 
+  // (ZNS): We need to disable the rebuild blob feature. One approach is to
+  // assign the configurable parameter max_dependence_blob_overlap with an
   // extremely large value
   Status status = sub_compact->GetRebuildNeededBlobs(this, &rebuild_blobs_info);
   if (!status.ok()) {
@@ -1705,7 +1754,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
       compaction_filter, shutting_down_, preserve_deletes_seqnum_,
       &rebuild_blobs_info.blobs));
   auto c_iter = sub_compact->c_iter.get();
-  // (ZNS): This is a compaction job, we need it gathers the obsolete
+  // (ZNS): This is a compaction job, we need it to gather the obsolete
   // information. Set the flag before it seeks to the first element
   c_iter->SetTrackObsoleteRecordsFlag(true);
   c_iter->SeekToFirst();
@@ -2326,6 +2375,648 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   sub_compact->status = status;
 }
 
+Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
+    SubcompactionState* sub_compact, ColumnFamilyData* cfd,
+    std::unique_ptr<InternalIterator> input) {
+  input->SeekToFirst();
+
+  std::unordered_map<std::string, uint64_t> occurrence_map;
+
+  Arena arena;
+  std::unordered_map<Slice, uint64_t, SliceHasher> conflict_map;
+  std::mutex conflict_map_mutex;
+
+  auto create_iter = [&](Arena* /* arena */) {
+    return versions_->MakeInputIterator(sub_compact->compaction, nullptr,
+                                        env_options_for_read_);
+  };
+  auto filter_conflict = [&](const Slice& ikey, const LazyBuffer& value) {
+    std::lock_guard<std::mutex> lock(conflict_map_mutex);
+    auto find = conflict_map.find(ikey);
+    return find != conflict_map.end() && find->second != value.file_number();
+  };
+
+  LazyInternalIteratorWrapper second_pass_iter(
+      c_style_callback(create_iter), &create_iter,
+      c_style_callback(filter_conflict), &filter_conflict, nullptr /* arena */,
+      shutting_down_);
+
+  Status status = OpenCompactionOutputBlob(sub_compact);
+  if (!status.ok()) {
+    return status;
+  }
+  sub_compact->blob_builder->SetSecondPassIterator(&second_pass_iter);
+
+  Version* input_version = sub_compact->compaction->input_version();
+  auto& dependence_map = input_version->storage_info()->dependence_map();
+  auto& comp = cfd->internal_comparator();
+  std::string last_key;
+  uint64_t last_file_number = uint64_t(-1);
+  IterKey iter_key;
+  ParsedInternalKey ikey;
+  struct {
+    uint64_t input = 0;
+    uint64_t garbage_type = 0;
+    uint64_t get_not_found = 0;
+    uint64_t file_number_mismatch = 0;
+  } counter;
+  std::vector<std::pair<uint64_t, FileMetaData*>> blob_meta_cache;
+  assert(!sub_compact->compaction->inputs()->empty());
+  blob_meta_cache.reserve(sub_compact->compaction->inputs()->front().size());
+  bool blob_closed = false;
+  size_t inheritance_tree_pruge_count = 0;
+
+  auto safe_blob_closer = [&]() {
+    if (sub_compact->blob_builder == nullptr) return Status::OK();
+    if (status.ok() &&
+        (shutting_down_->load(std::memory_order_relaxed) || cfd->IsDropped())) {
+      status = Status::ShutdownInProgress(
+          "Database shutdown or Column family drop during compaction");
+    }
+    if (status.ok()) {
+      status = input->status();
+    }
+    std::vector<uint64_t> inheritance_tree;
+
+    if (status.ok()) {
+      status = BuildInheritanceTree(
+          *sub_compact->compaction->inputs(), dependence_map, input_version,
+          &inheritance_tree, &inheritance_tree_pruge_count);
+    }
+
+    return FinishCompactionOutputBlob(status, sub_compact, inheritance_tree);
+  };
+
+  std::string key_buffer;
+  while (status.ok() && !cfd->IsDropped()) {
+    ++counter.input;
+    Slice curr_key = input->key();
+    uint64_t curr_file_number = uint64_t(-1);
+    if (!ParseInternalKey(curr_key, &ikey)) {
+      status =
+          Status::Corruption("ProcessGarbageCollection invalid InternalKey");
+      break;
+    }
+
+    key_buffer.assign(ikey.user_key.data(), ikey.user_key.size());
+    occurrence_map[key_buffer] += 1;
+
+    uint64_t blob_file_number = input->value().file_number();
+    FileMetaData* blob_meta;
+    auto find_cache = std::find_if(
+        blob_meta_cache.begin(), blob_meta_cache.end(),
+        [blob_file_number](const std::pair<uint64_t, FileMetaData*>& pair) {
+          return pair.first == blob_file_number;
+        });
+    if (find_cache != blob_meta_cache.end()) {
+      blob_meta = find_cache->second;
+    } else {
+      auto find_dependence_map = dependence_map.find(blob_file_number);
+      if (find_dependence_map == dependence_map.end()) {
+        status =
+            Status::Corruption("ProcessGarbageCollection internal error !");
+        break;
+      }
+      blob_meta = find_dependence_map->second;
+      blob_meta_cache.emplace_back(blob_file_number, blob_meta);
+      assert(blob_meta->fd.GetNumber() == blob_file_number);
+    }
+    do {
+      if (ikey.type != kTypeValue && ikey.type != kTypeMerge) {
+        ++counter.garbage_type;
+        break;
+      }
+      iter_key.SetInternalKey(ikey.user_key, ikey.sequence, kValueTypeForSeek);
+      Status s;
+      ValueType type = kTypeDeletion;
+      SequenceNumber seq = kMaxSequenceNumber;
+      LazyBuffer value;
+      input_version->GetKey(ikey.user_key, iter_key.GetInternalKey(), &s, &type,
+                            &seq, &value, *blob_meta);
+      if (s.IsNotFound()) {
+        ++counter.get_not_found;
+        break;
+      } else if (!s.ok()) {
+        status = std::move(s);
+        break;
+      } else if (seq != ikey.sequence ||
+                 (type != kTypeValueIndex && type != kTypeMergeIndex)) {
+        ++counter.get_not_found;
+        break;
+      }
+      status = value.fetch();
+      if (!status.ok()) {
+        break;
+      }
+      uint64_t file_number = SeparateHelper::DecodeFileNumber(value.slice());
+      auto find = dependence_map.find(file_number);
+      if (find == dependence_map.end()) {
+        status = Status::Corruption("Separate value dependence missing");
+        break;
+      }
+      value = input->value();
+      if (find->second->fd.GetNumber() != value.file_number()) {
+        ++counter.file_number_mismatch;
+        break;
+      }
+      curr_file_number = value.file_number();
+
+      assert(sub_compact->blob_builder != nullptr);
+      assert(sub_compact->current_blob_output() != nullptr);
+      status = sub_compact->blob_builder->Add(curr_key, value);
+      if (!status.ok()) {
+        break;
+      }
+      sub_compact->current_blob_output()->meta.UpdateBoundaries(curr_key,
+                                                                ikey.sequence);
+      sub_compact->num_output_records++;
+    } while (false);
+
+    if (counter.input > 1 && comp.Compare(curr_key, last_key) == 0 &&
+        (last_file_number & curr_file_number) != uint64_t(-1)) {
+      assert(last_file_number == uint64_t(-1) ||
+             curr_file_number == uint64_t(-1));
+      uint64_t valid_file_number = last_file_number & curr_file_number;
+      auto pinned_key = ArenaPinSlice(curr_key, &arena);
+      std::lock_guard<std::mutex> lock(conflict_map_mutex);
+      conflict_map.emplace(pinned_key, valid_file_number);
+    }
+    last_key.assign(curr_key.data(), curr_key.size());
+    last_file_number = curr_file_number;
+
+    // XTODO: not sure whether should use this method
+    //   candidate method: cfd->GetCurrentMutableCFOptions()
+    auto mutable_cf_options = cfd->GetLatestMutableCFOptions();
+    auto ioptions = cfd->ioptions();
+    size_t target_blob_file_size = MaxBlobSize(
+        *mutable_cf_options, ioptions->num_levels, ioptions->compaction_style);
+
+    if (sub_compact->blob_builder->FileSize() > target_blob_file_size) {
+      status = safe_blob_closer();
+      if (!status.ok()) {
+        return status;
+      }
+
+      // looking forward once to check whether we really need to open a new
+      // blob file
+      input->Next();
+      if (!input->Valid()) {
+        break;
+      }
+      status = OpenCompactionOutputBlob(sub_compact);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+    input->Next();
+    if (!input->Valid()) {
+      break;
+    }
+  }
+
+  auto s = safe_blob_closer();
+  if (status.ok()) {
+    status = s;
+    env_->GetOracle()->MergeKeys(occurrence_map);
+  }
+
+  if (status.ok()) {
+    auto& meta = sub_compact->blob_outputs.front().meta;
+    auto& inputs = *sub_compact->compaction->inputs();
+    assert(inputs.size() == 1 && inputs.front().level == -1);
+    auto& files = inputs.front().files;
+    ROCKS_LOG_INFO(
+        db_options_.info_log,
+        "[%s] [JOB %d] Table #%" PRIu64 " GC: %" PRIu64
+        " inputs from %zd files. %" PRIu64
+        " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
+        " get not found, %" PRIu64
+        " file number mismatch ], inheritance tree: %zd -> %zd",
+        cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
+        files.size(), counter.input - meta.prop.num_entries,
+        sub_compact->compaction->num_antiquation() * 100. / counter.input,
+        counter.garbage_type, counter.get_not_found,
+        counter.file_number_mismatch,
+        meta.prop.inheritance.size() + inheritance_tree_pruge_count,
+        meta.prop.inheritance.size());
+    if ((std::find_if(files.begin(), files.end(),
+                      [](FileMetaData* f) {
+                        return f->marked_for_compaction;
+                      }) == files.end() &&
+         files.size() == 1 && counter.input == meta.prop.num_entries) ||
+        meta.prop.num_entries == 0) {
+      ROCKS_LOG_INFO(db_options_.info_log,
+                     "[%s] [JOB %d] Table #%" PRIu64
+                     " GC purge %s records, dropped",
+                     cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(),
+                     meta.prop.num_entries == 0 ? "whole" : "0");
+      std::string fname = TableFileName(
+          sub_compact->compaction->immutable_cf_options()->cf_paths,
+          meta.fd.GetNumber(), meta.fd.GetPathId());
+      env_->DeleteFile(fname);
+      sub_compact->blob_outputs.clear();
+    }
+  }
+
+  return status;
+}
+Status CompactionJob::ProcessZNSPartitionGarbageCollection(
+    SubcompactionState* sub_compact, ColumnFamilyData* cfd,
+    std::unique_ptr<InternalIterator> input) {
+  input->SeekToFirst();
+  std::unordered_map<std::string, uint64_t> occurrence_map;
+
+  Arena arena;
+  std::unordered_map<Slice, uint64_t, SliceHasher> conflict_map;
+  std::mutex conflict_map_mutex;
+
+  auto create_iter = [&](Arena* /* arena */) {
+    return versions_->MakeInputIterator(sub_compact->compaction, nullptr,
+                                        env_options_for_read_);
+  };
+  auto filter_conflict = [&](const Slice& ikey, const LazyBuffer& value) {
+    std::lock_guard<std::mutex> lock(conflict_map_mutex);
+    auto find = conflict_map.find(ikey);
+    return find != conflict_map.end() && find->second != value.file_number();
+  };
+
+  LazyInternalIteratorWrapper second_pass_iter(
+      c_style_callback(create_iter), &create_iter,
+      c_style_callback(filter_conflict), &filter_conflict, nullptr /* arena */,
+      shutting_down_);
+
+  // Status status = OpenCompactionOutputBlob(sub_compact);
+  //
+  auto status =
+      OpenSpecialCompactionOutputBlobs(sub_compact, PlacementFileType::Hot());
+  if (!status.ok()) {
+    return status;
+  }
+
+  status =
+      OpenSpecialCompactionOutputBlobs(sub_compact, PlacementFileType::Warm());
+  if (!status.ok()) {
+    return status;
+  }
+
+  auto partition_id = sub_compact->compaction->placement_id();
+  status = OpenSpecialCompactionOutputBlobs(
+      sub_compact, PlacementFileType::Partition(partition_id));
+  if (!status.ok()) {
+    return status;
+  }
+
+  // XTODO: I searched through the project, SetSecondPassIterator
+  //   seems to be an empty function for BlockBasedTableBuilder,
+  //   so I leave this line untouched
+  sub_compact->blob_builder->SetSecondPassIterator(&second_pass_iter);
+
+  Version* input_version = sub_compact->compaction->input_version();
+  auto& dependence_map = input_version->storage_info()->dependence_map();
+  auto& comp = cfd->internal_comparator();
+  std::string last_key;
+  uint64_t last_file_number = uint64_t(-1);
+  IterKey iter_key;
+  ParsedInternalKey ikey;
+  struct {
+    uint64_t input = 0;
+    uint64_t garbage_type = 0;
+    uint64_t get_not_found = 0;
+    uint64_t file_number_mismatch = 0;
+  } counter;
+  std::vector<std::pair<uint64_t, FileMetaData*>> blob_meta_cache;
+  assert(!sub_compact->compaction->inputs()->empty());
+  blob_meta_cache.reserve(sub_compact->compaction->inputs()->front().size());
+  bool blob_closed = false;
+  size_t inheritance_tree_pruge_count = 0;
+
+  // This is not a safe blob closer as in the method
+  // CompactionJob::ProcessZNSNonPartitionGarbageCollection
+  // We handle duplicated file closes in the
+  // CompactionJob::FinishSpecialCompactionOutputBlob
+  auto blob_closer = [&](PlacementFileType close_type) {
+    if (status.ok() &&
+        (shutting_down_->load(std::memory_order_relaxed) || cfd->IsDropped())) {
+      status = Status::ShutdownInProgress(
+          "Database shutdown or Column family drop during compaction");
+    }
+    if (status.ok()) {
+      status = input->status();
+    }
+    std::vector<uint64_t> inheritance_tree;
+
+    if (status.ok()) {
+      status = BuildInheritanceTree(
+          *sub_compact->compaction->inputs(), dependence_map, input_version,
+          &inheritance_tree, &inheritance_tree_pruge_count);
+    }
+
+    return FinishSpecialCompactionOutputBlob(status, sub_compact,
+                                             inheritance_tree, close_type);
+  };
+
+  std::string prev_key;
+  std::string current_key;
+  LazyBuffer prev_value;
+  Slice curr_slice;
+  Slice prev_slice;
+  uint64_t curr_file_number;
+  PlacementFileType placement_type;
+  // while (status.ok() && !cfd->IsDropped() && input->Valid()) {
+  while (status.ok() && !cfd->IsDropped()) {
+    if (input->Valid()) {
+      ++counter.input;
+      curr_slice = input->key();
+      curr_file_number = uint64_t(-1);
+      if (!ParseInternalKey(curr_slice, &ikey)) {
+        status =
+            Status::Corruption("ProcessGarbageCollection invalid InternalKey");
+        break;
+      }
+
+      current_key.assign(ikey.user_key.data(), ikey.user_key.size());
+      occurrence_map[current_key] += 1;
+      if (prev_key.empty()) {
+        prev_key = current_key;
+        prev_slice = curr_slice;
+        prev_value = input->value();
+      }
+
+      // encountering the same key, go ahead
+      // input->Valid() == false indicates that the iterator has
+      // gone beyond its context but the last prev_key hasn't
+      // been written to a blob file yet, so execute the following
+      // lines one more time
+      if (current_key == prev_key) {
+        input->Next();
+        continue;
+      }
+    }
+
+    // encountering a new key, we should put the prev_key to a suitable
+    // blob file and update prev_key and prev_value to the current key
+    // and value
+
+    uint64_t blob_file_number = prev_value.file_number();
+    FileMetaData* blob_meta;
+    auto find_cache = std::find_if(
+        blob_meta_cache.begin(), blob_meta_cache.end(),
+        [blob_file_number](const std::pair<uint64_t, FileMetaData*>& pair) {
+          return pair.first == blob_file_number;
+        });
+    if (find_cache != blob_meta_cache.end()) {
+      blob_meta = find_cache->second;
+    } else {
+      auto find_dependence_map = dependence_map.find(blob_file_number);
+      if (find_dependence_map == dependence_map.end()) {
+        status =
+            Status::Corruption("ProcessGarbageCollection internal error !");
+        break;
+      }
+      blob_meta = find_dependence_map->second;
+      blob_meta_cache.emplace_back(blob_file_number, blob_meta);
+      assert(blob_meta->fd.GetNumber() == blob_file_number);
+    }
+
+    WritableFileWriter* blob_outfile = nullptr;
+    TableBuilder* blob_builder = nullptr;
+    SubcompactionState::Output* current_blob_output = nullptr;
+
+    do {
+      if (ikey.type != kTypeValue && ikey.type != kTypeMerge) {
+        ++counter.garbage_type;
+        break;
+      }
+      iter_key.SetInternalKey(ikey.user_key, ikey.sequence, kValueTypeForSeek);
+      Status s;
+      ValueType type = kTypeDeletion;
+      SequenceNumber seq = kMaxSequenceNumber;
+      LazyBuffer value;
+      input_version->GetKey(ikey.user_key, iter_key.GetInternalKey(), &s, &type,
+                            &seq, &value, *blob_meta);
+      if (s.IsNotFound()) {
+        ++counter.get_not_found;
+        break;
+      } else if (!s.ok()) {
+        status = std::move(s);
+        break;
+      } else if (seq != ikey.sequence ||
+                 (type != kTypeValueIndex && type != kTypeMergeIndex)) {
+        ++counter.get_not_found;
+        break;
+      }
+      status = value.fetch();
+      if (!status.ok()) {
+        break;
+      }
+      uint64_t file_number = SeparateHelper::DecodeFileNumber(value.slice());
+      auto find = dependence_map.find(file_number);
+      if (find == dependence_map.end()) {
+        status = Status::Corruption("Separate value dependence missing");
+        break;
+      }
+      // value = input->value();
+      value.assign(prev_value);
+      if (find->second->fd.GetNumber() != value.file_number()) {
+        ++counter.file_number_mismatch;
+        break;
+      }
+      curr_file_number = value.file_number();
+
+      placement_type =
+          env_->GetOracle()->ProbeKeyType(prev_key, occurrence_map[prev_key]);
+
+      TableBuilder* blob_builder = nullptr;
+      SubcompactionState::Output* current_blob_output = nullptr;
+
+      if (placement_type.IsHot()) {
+        blob_builder = sub_compact->hot_builder.get();
+        current_blob_output = sub_compact->current_hot_blob_output();
+      } else if (placement_type.IsWarm()) {
+        blob_builder = sub_compact->warm_builder.get();
+        current_blob_output = sub_compact->current_warm_blob_output();
+      } else if (placement_type.IsParition()) {
+        blob_builder = sub_compact->partition_builder.get();
+        current_blob_output = sub_compact->current_partition_blob_output();
+      } else {
+        assert(false);
+      }
+
+      assert(blob_builder != nullptr);
+      assert(current_blob_output != nullptr);
+      status = blob_builder->Add(prev_slice, value);
+      if (!status.ok()) {
+        break;
+      }
+      current_blob_output->meta.UpdateBoundaries(prev_slice, ikey.sequence);
+      sub_compact->num_output_records++;
+    } while (false);
+
+    if (counter.input > 1 && comp.Compare(prev_slice, last_key) == 0 &&
+        (last_file_number & curr_file_number) != uint64_t(-1)) {
+      assert(last_file_number == uint64_t(-1) ||
+             curr_file_number == uint64_t(-1));
+      uint64_t valid_file_number = last_file_number & curr_file_number;
+      auto pinned_key = ArenaPinSlice(prev_slice, &arena);
+      std::lock_guard<std::mutex> lock(conflict_map_mutex);
+      conflict_map.emplace(pinned_key, valid_file_number);
+    }
+    last_key.assign(prev_slice.data(), prev_slice.size());
+    last_file_number = curr_file_number;
+
+    // XTODO: not sure whether should use this method
+    //   candidate method: cfd->GetCurrentMutableCFOptions()
+    auto mutable_cf_options = cfd->GetLatestMutableCFOptions();
+    auto ioptions = cfd->ioptions();
+    size_t target_blob_file_size = MaxBlobSize(
+        *mutable_cf_options, ioptions->num_levels, ioptions->compaction_style);
+
+    if (sub_compact->blob_builder->FileSize() > target_blob_file_size) {
+      status = blob_closer(placement_type);
+      if (!status.ok()) {
+        return status;
+      }
+      status = OpenSpecialCompactionOutputBlobs(sub_compact, placement_type);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+
+    prev_key = current_key;
+    prev_slice = curr_slice;
+    if (input->Valid()) {
+      input->Next();
+    } else {
+      break;
+    }
+  }
+
+  // the following three succesive calls to blob_closer are safe because
+  // we handle duplicated file closes in the
+  // CompactionJob::FinishSpecialComacptionOutputBlob
+  auto s = blob_closer(PlacementFileType::Hot());
+  if (status.ok()) {
+    status = s;
+  }
+
+  s = blob_closer(PlacementFileType::Warm());
+  if (status.ok()) {
+    status = s;
+  }
+
+  s = blob_closer(PlacementFileType::Partition(partition_id));
+  if (status.ok()) {
+    status = s;
+  }
+
+  env_->GetOracle()->MergeKeys(occurrence_map);
+  if (status.ok()) {
+    auto& meta = sub_compact->blob_outputs.front().meta;
+    auto& inputs = *sub_compact->compaction->inputs();
+    assert(inputs.size() == 1 && inputs.front().level == -1);
+    auto& files = inputs.front().files;
+    ROCKS_LOG_INFO(
+        db_options_.info_log,
+        "[%s] [JOB %d] Table #%" PRIu64 " GC: %" PRIu64
+        " inputs from %zd files. %" PRIu64
+        " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
+        " get not found, %" PRIu64
+        " file number mismatch ], inheritance tree: %zd -> %zd",
+        cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
+        files.size(), counter.input - meta.prop.num_entries,
+        sub_compact->compaction->num_antiquation() * 100. / counter.input,
+        counter.garbage_type, counter.get_not_found,
+        counter.file_number_mismatch,
+        meta.prop.inheritance.size() + inheritance_tree_pruge_count,
+        meta.prop.inheritance.size());
+    if ((std::find_if(files.begin(), files.end(),
+                      [](FileMetaData* f) {
+                        return f->marked_for_compaction;
+                      }) == files.end() &&
+         files.size() == 1 && counter.input == meta.prop.num_entries) ||
+        meta.prop.num_entries == 0) {
+      ROCKS_LOG_INFO(db_options_.info_log,
+                     "[%s] [JOB %d] Table #%" PRIu64
+                     " GC purge %s records, dropped",
+                     cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(),
+                     meta.prop.num_entries == 0 ? "whole" : "0");
+      std::string fname = TableFileName(
+          sub_compact->compaction->immutable_cf_options()->cf_paths,
+          meta.fd.GetNumber(), meta.fd.GetPathId());
+      env_->DeleteFile(fname);
+      sub_compact->blob_outputs.clear();
+    }
+  }
+
+  return status;
+}
+
+void CompactionJob::ProcessZNSGarbageCollection(
+    SubcompactionState* sub_compact) {
+  assert(sub_compact != nullptr);
+  ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
+
+  std::unique_ptr<InternalIterator> input(versions_->MakeInputIterator(
+      sub_compact->compaction, nullptr, env_options_for_read_));
+
+  AutoThreadOperationStageUpdater stage_updater(
+      ThreadStatus::STAGE_COMPACTION_PROCESS_KV);
+
+  // I/O measurement variables
+  PerfLevel prev_perf_level = PerfLevel::kEnableTime;
+  uint64_t prev_write_nanos = 0;
+  uint64_t prev_fsync_nanos = 0;
+  uint64_t prev_range_sync_nanos = 0;
+  uint64_t prev_prepare_write_nanos = 0;
+  if (measure_io_stats_) {
+    prev_perf_level = GetPerfLevel();
+    SetPerfLevel(PerfLevel::kEnableTime);
+    prev_write_nanos = IOSTATS(write_nanos);
+    prev_fsync_nanos = IOSTATS(fsync_nanos);
+    prev_range_sync_nanos = IOSTATS(range_sync_nanos);
+    prev_prepare_write_nanos = IOSTATS(prepare_write_nanos);
+  }
+
+  assert(sub_compact->start == nullptr);
+  assert(sub_compact->end == nullptr);
+
+  // input->SeekToFirst();
+  auto status = Status::OK();
+  switch (sub_compact->compaction->compaction_type()) {
+    case kZNSHotGarbageCollection:
+    // fall through
+    case kZNSWarmGarbageCollection:
+    // fall through
+    case kZNSColdGarbageCollection:
+      status = ProcessZNSNonPartitionGarbageCollection(sub_compact, cfd,
+                                                       std::move(input));
+      break;
+    case kZNSPartitionGarbageCollection:
+      status = ProcessZNSPartitionGarbageCollection(sub_compact, cfd,
+                                                    std::move(input));
+      break;
+    default:
+      assert(false);
+  }
+
+  if (measure_io_stats_) {
+    sub_compact->compaction_job_stats.file_write_nanos +=
+        IOSTATS(write_nanos) - prev_write_nanos;
+    sub_compact->compaction_job_stats.file_fsync_nanos +=
+        IOSTATS(fsync_nanos) - prev_fsync_nanos;
+    sub_compact->compaction_job_stats.file_range_sync_nanos +=
+        IOSTATS(range_sync_nanos) - prev_range_sync_nanos;
+    sub_compact->compaction_job_stats.file_prepare_write_nanos +=
+        IOSTATS(prepare_write_nanos) - prev_prepare_write_nanos;
+    if (prev_perf_level != PerfLevel::kEnableTime) {
+      SetPerfLevel(prev_perf_level);
+    }
+  }
+
+  input.reset();
+  sub_compact->status = status;
+}
+
 void CompactionJob::RecordDroppedKeys(
     const CompactionIterationStats& c_iter_stats,
     CompactionJobStats* compaction_job_stats) {
@@ -2696,6 +3387,158 @@ Status CompactionJob::FinishCompactionOutputBlob(
   return s;
 }
 
+Status CompactionJob::FinishSpecialCompactionOutputBlob(
+    const Status& input_status, SubcompactionState* sub_compact,
+    const std::vector<uint64_t>& inheritance_tree, PlacementFileType type) {
+  AutoThreadOperationStageUpdater stage_updater(
+      ThreadStatus::STAGE_COMPACTION_SYNC_FILE);
+
+  WritableFileWriter* blob_outfile = nullptr;
+  TableBuilder* blob_builder = nullptr;
+  SubcompactionState::Output* current_blob_output = nullptr;
+
+  if (type.IsHot()) {
+    blob_outfile = sub_compact->hot_outfile.get();
+    blob_builder = sub_compact->hot_builder.get();
+    current_blob_output = sub_compact->current_hot_blob_output();
+  } else if (type.IsWarm()) {
+    blob_outfile = sub_compact->warm_outfile.get();
+    blob_builder = sub_compact->warm_builder.get();
+    current_blob_output = sub_compact->current_warm_blob_output();
+  } else if (type.IsParition()) {
+    blob_outfile = sub_compact->partition_outfile.get();
+    blob_builder = sub_compact->partition_builder.get();
+    current_blob_output = sub_compact->current_partition_blob_output();
+  } else {
+    assert(false);
+  }
+
+  // a null blob_builder indicates that this builder is already finished in our
+  // implementation because we limit the blob size. The while loop in
+  // CompactionJob::ProcessZNSPartitionGarbageCollection will close the builder
+  // when its size reaches a certain value.
+  if (blob_builder == nullptr) {
+    return input_status;
+  }
+
+  assert(sub_compact != nullptr);
+  assert(blob_outfile);
+  assert(blob_builder != nullptr);
+  assert(current_blob_output != nullptr);
+  TEST_SYNC_POINT_CALLBACK("CompactionJob::FinishCompactionOutputBlob::Start",
+                           &sub_compact->current_blob_output()->meta);
+
+  uint64_t output_number = current_blob_output->meta.fd.GetNumber();
+  assert(output_number != 0);
+
+  ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
+
+  // Check for iterator errors
+  Status s = input_status;
+  auto meta = &current_blob_output->meta;
+  assert(meta != nullptr);
+  if (s.ok()) {
+    meta->prop.num_entries = blob_builder->NumEntries();
+    meta->prop.inheritance = InheritanceTreeToSet(inheritance_tree);
+    assert(std::is_sorted(meta->prop.inheritance.begin(),
+                          meta->prop.inheritance.end()));
+    s = blob_builder->Finish(&meta->prop, nullptr, &inheritance_tree);
+  } else {
+    sub_compact->blob_builder->Abandon();
+  }
+  const uint64_t current_bytes = blob_builder->FileSize();
+  if (s.ok()) {
+    meta->fd.file_size = current_bytes;
+  }
+  current_blob_output->finished = true;
+  sub_compact->total_bytes += current_bytes;
+
+  // Finish and check for file errors
+  if (s.ok()) {
+    StopWatch sw(env_, stats_, COMPACTION_OUTFILE_SYNC_MICROS);
+    s = blob_outfile->Sync(db_options_.use_fsync);
+  }
+  if (s.ok()) {
+    s = blob_outfile->Close();
+  }
+
+  if (type.IsHot()) {
+    sub_compact->hot_outfile.reset();
+  } else if (type.IsWarm()) {
+    sub_compact->warm_outfile.reset();
+  } else if (type.IsParition()) {
+    sub_compact->partition_outfile.reset();
+  } else {
+    assert(false);
+  }
+
+  TableProperties tp;
+  if (s.ok()) {
+    tp = blob_builder->GetTableProperties();
+    meta->prop.num_deletions = tp.num_deletions;
+    meta->prop.raw_key_size = tp.raw_key_size;
+    meta->prop.raw_value_size = tp.raw_value_size;
+    meta->prop.flags |= TablePropertyCache::kNoRangeDeletions;
+  }
+
+  if (s.ok()) {
+    // Output to event logger and fire events.
+    current_blob_output->table_properties =
+        std::make_shared<TableProperties>(tp);
+    ROCKS_LOG_INFO(db_options_.info_log,
+                   "[%s] [JOB %d] Generated blob #%" PRIu64 ": %" PRIu64
+                   " keys, %" PRIu64 " bytes",
+                   cfd->GetName().c_str(), job_id_, output_number,
+                   meta->prop.num_entries, current_bytes);
+  }
+  std::string fname;
+  FileDescriptor output_fd;
+  if (meta != nullptr) {
+    fname =
+        TableFileName(sub_compact->compaction->immutable_cf_options()->cf_paths,
+                      meta->fd.GetNumber(), meta->fd.GetPathId());
+    output_fd = meta->fd;
+  } else {
+    fname = "(nil)";
+  }
+  EventHelpers::LogAndNotifyTableFileCreationFinished(
+      event_logger_, cfd->ioptions()->listeners, dbname_, cfd->GetName(), fname,
+      job_id_, output_fd, tp, TableFileCreationReason::kCompaction, s);
+
+#ifndef ROCKSDB_LITE
+  // Report new file to SstFileManagerImpl
+  auto sfm =
+      static_cast<SstFileManagerImpl*>(db_options_.sst_file_manager.get());
+  if (sfm && meta != nullptr && meta->fd.GetPathId() == 0) {
+    auto fn =
+        TableFileName(sub_compact->compaction->immutable_cf_options()->cf_paths,
+                      meta->fd.GetNumber(), meta->fd.GetPathId());
+    sfm->OnAddFile(fn);
+    if (sfm->IsMaxAllowedSpaceReached()) {
+      // TODO(ajkr): should we return OK() if max space was reached by the final
+      // compaction output file (similarly to how flush works when full)?
+      s = Status::SpaceLimit("Max allowed space was reached");
+      TEST_SYNC_POINT(
+          "CompactionJob::FinishCompactionOutputBlob:"
+          "MaxAllowedSpaceReached");
+      InstrumentedMutexLock l(db_mutex_);
+      db_error_handler_->SetBGError(s, BackgroundErrorReason::kCompaction);
+    }
+  }
+#endif
+  if (type.IsHot()) {
+    sub_compact->hot_builder.reset();
+  } else if (type.IsWarm()) {
+    sub_compact->warm_builder.reset();
+  } else if (type.IsParition()) {
+    sub_compact->partition_builder.reset();
+  } else {
+    assert(false);
+  }
+
+  return s;
+}
+
 void CompactionJob::CallProcessCompaction(void* arg) {
   ProcessArg* args = (ProcessArg*)arg;
   args->job->ProcessCompaction(
@@ -2968,6 +3811,7 @@ Status CompactionJob::OpenCompactionOutputFile(
   //   sub_compact->compaction->output_level();
   //
   writable_file->SetFileLevel(sub_compact->compaction->output_level());
+  writable_file->SetPlacementFileType(PlacementFileType::NoType());
   Status s = NewWritableFile(env_, fname, &writable_file, env_options);
   // ZnsLog(Color::kBlue, ">>>> xzw >>>> Compacting file %s to level %d\n",
   // fname.c_str(), sub_compact->compaction->output_level());
@@ -3046,8 +3890,45 @@ Status CompactionJob::OpenCompactionOutputFile(
 
 Status CompactionJob::OpenCompactionOutputBlob(
     SubcompactionState* sub_compact) {
+  // (kqh): Control the file type of compaction output file
+  auto env_options = env_options_;
+  env_options.db_file_type = DBFileType::kCompactionOutputFile;
+  switch (sub_compact->compaction->compaction_type()) {
+    case kZNSHotGarbageCollection:
+      return OpenCompactinOutputBlobHelper(
+          sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
+          PlacementFileType::Hot(), true);
+    case kZNSWarmGarbageCollection:
+      return OpenCompactinOutputBlobHelper(
+          sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
+          PlacementFileType::Warm(), true);
+    default:
+      return OpenCompactinOutputBlobHelper(
+          sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
+          PlacementFileType::NoType(), true);
+  }
+}
+
+Status CompactionJob::OpenSpecialCompactionOutputBlobs(
+    SubcompactionState* sub_compact, PlacementFileType type) {
+  if (type.IsNoType()) {
+    return Status::NotSupported(
+        "Can not open NoType Output Blob in OpenSpecialCompactionOutputBlobs");
+  }
+  // (kqh): Control the file type of compaction output file
+  auto env_options = env_options_;
+  env_options.db_file_type = DBFileType::kCompactionOutputFile;
+  return OpenCompactinOutputBlobHelper(sub_compact, sub_compact->blob_outfile,
+                                       sub_compact->blob_builder, type, false);
+}
+
+Status CompactionJob::OpenCompactinOutputBlobHelper(
+    SubcompactionState* sub_compact,
+    std::unique_ptr<WritableFileWriter>& blob_outfile,
+    std::unique_ptr<TableBuilder>& blob_builder, PlacementFileType type,
+    bool use_default_blob) {
   assert(sub_compact != nullptr);
-  assert(sub_compact->blob_builder == nullptr);
+  assert(blob_builder == nullptr);
   // no need to lock because VersionSet::next_file_number_ is atomic
   uint64_t file_number = versions_->NewFileNumber();
   std::string fname =
@@ -3070,6 +3951,8 @@ Status CompactionJob::OpenCompactionOutputBlob(
   // (kqh): Control the file type of compaction output file
   auto env_options = env_options_;
   env_options.db_file_type = DBFileType::kCompactionOutputFile;
+  writable_file->SetFileLevel(uint64_t(-1));
+  writable_file->SetPlacementFileType(type);
   Status s = NewWritableFile(env_, fname, &writable_file, env_options);
   if (!s.ok()) {
     ROCKS_LOG_ERROR(
@@ -3091,7 +3974,19 @@ Status CompactionJob::OpenCompactionOutputBlob(
       FileDescriptor(file_number, sub_compact->compaction->output_path_id(), 0);
   out.finished = false;
 
-  sub_compact->blob_outputs.push_back(out);
+  if (use_default_blob) {
+    sub_compact->blob_outputs.push_back(out);
+  } else {
+    if (type.IsHot()) {
+      sub_compact->hot_blob_outputs.push_back(out);
+    } else if (type.IsWarm()) {
+      sub_compact->warm_blob_outputs.push_back(out);
+    } else if (type.IsParition()) {
+      sub_compact->partition_blob_outputs.push_back(out);
+    } else {
+      assert(false);
+    }
+  }
   writable_file->SetIOPriority(Env::IO_LOW);
   // writable_file->SetWriteLifeTimeHint(write_hint_);
   // (kqh): Blob file should have extremely long lifetime
@@ -3100,7 +3995,7 @@ Status CompactionJob::OpenCompactionOutputBlob(
       sub_compact->compaction->OutputFilePreallocationSize()));
   const auto& listeners =
       sub_compact->compaction->immutable_cf_options()->listeners;
-  sub_compact->blob_outfile.reset(
+  blob_outfile.reset(
       new WritableFileWriter(std::move(writable_file), fname, env_options_,
                              db_options_.statistics.get(), listeners));
 
@@ -3123,7 +4018,7 @@ Status CompactionJob::OpenCompactionOutputBlob(
   auto c = sub_compact->compaction;
   auto& moptions = *c->mutable_cf_options();
   // skip_filters always false, Blob all hits
-  sub_compact->blob_builder.reset(NewTableBuilder(
+  blob_builder.reset(NewTableBuilder(
       *cfd->ioptions(), moptions, cfd->internal_comparator(),
       cfd->int_tbl_prop_collector_factories_for_blob(moptions), cfd->GetID(),
       cfd->GetName(), sub_compact->blob_outfile.get(),

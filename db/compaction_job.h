@@ -9,6 +9,8 @@
 #pragma once
 
 #include <atomic>
+
+#include "table/internal_iterator.h"
 #ifdef __clang__
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
@@ -125,6 +127,15 @@ class CompactionJob {
   void ProcessKeyValueCompaction(SubcompactionState* sub_compact);
   void ProcessGarbageCollection(SubcompactionState* sub_compact);
 
+  // For ZNS
+  Status ProcessZNSNonPartitionGarbageCollection(
+      SubcompactionState* sub_compact, ColumnFamilyData* cfd,
+      std::unique_ptr<InternalIterator> input);
+  Status ProcessZNSPartitionGarbageCollection(
+      SubcompactionState* sub_compact, ColumnFamilyData* cfd,
+      std::unique_ptr<InternalIterator> input);
+  void ProcessZNSGarbageCollection(SubcompactionState* sub_compact);
+
   Status FinishCompactionOutputFile(
       const Status& input_status, SubcompactionState* sub_compact,
       CompactionRangeDelAggregator* range_del_agg,
@@ -134,10 +145,33 @@ class CompactionJob {
   Status FinishCompactionOutputBlob(
       const Status& input_status, SubcompactionState* sub_compact,
       const std::vector<uint64_t>& inheritance_tree);
+  Status FinishSpecialCompactionOutputBlob(
+      const Status& input_status, SubcompactionState* sub_compact,
+      const std::vector<uint64_t>& inheritance_tree, PlacementFileType type);
   Status InstallCompactionResults(const MutableCFOptions& mutable_cf_options);
   void RecordCompactionIOStats();
   Status OpenCompactionOutputFile(SubcompactionState* sub_compact);
+
+  // OpenCompactionOutputBlob and OpenSpecialCompactionOutputBlob are
+  // specialized for ZNS. In OpenCompactionOutputBlob, we reuse the blob_builder
+  // and related fields in SubcompactionState but assigns the output files
+  // PlacementFileType to be either Hot or Warm.
+  //
+  // In OpenSpecialCompactionOutputBlob, we use the hot_blob_builder,
+  // warm_blob_builder and partition_blob_builder accordingly.
   Status OpenCompactionOutputBlob(SubcompactionState* sub_compact);
+  Status OpenSpecialCompactionOutputBlobs(SubcompactionState* subcompact,
+                                          PlacementFileType type);
+
+  // This helper initializes the blob_outfile and blob_builder fields in the
+  // subcompact. The default parameter use_default_blob will decide whether
+  // to use the blob_outputs unconditionally, or use the hot_blob_outputs,
+  // warm_blob_outputs and cold_blob_outputs accordingly.
+  Status OpenCompactinOutputBlobHelper(
+      SubcompactionState* sub_compact,
+      std::unique_ptr<WritableFileWriter>& blob_outfile,
+      std::unique_ptr<TableBuilder>& blob_builder, PlacementFileType type,
+      bool use_default_blob = true);
   void CleanupCompaction();
   void UpdateCompactionJobStats(
       const InternalStats::CompactionStats& stats) const;

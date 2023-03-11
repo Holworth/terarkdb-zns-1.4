@@ -25,6 +25,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "db/compaction_iteration_stats.h"
@@ -86,6 +87,15 @@ enum class DBFileType {
   kManifest = 4,
 };
 
+// ZNS: we need this for ZenFS to pass GC selection (hot zones, paritions or
+// cold zones) to the DB
+enum GenericHotness : uint64_t {
+  NoType = 0,
+  Hot = (1ULL << 31),
+  Warm = (2ULL << 31),
+  Cold = (3ULL << 31),
+};
+
 // ZNS: This type is used to determine the type of a specific key. It can also
 // be used as the type of a concrete table. Originally, we tend to implement
 // this type using enum class. The enumeration includes: Hot, Warm, Cold and
@@ -95,22 +105,24 @@ enum class DBFileType {
 // Instead, we choose to implement this type in a similar way of the Status
 // class.
 struct KeyType {
+  KeyType() : code(GenericHotness::NoType) {};
   KeyType(uint64_t _code) : code(_code) {}
   KeyType(const KeyType&) = default;
   KeyType& operator=(const KeyType&) = default;
 
-  static KeyType NoType() { return KeyType(0); }
-  static KeyType Hot() { return KeyType(1ULL << 31); }
-  static KeyType Warm() { return KeyType(2ULL << 31); }
-  static KeyType Cold() { return KeyType(3ULL << 31); }
+  static KeyType NoType() { return KeyType(GenericHotness::NoType); }
+  static KeyType Hot() { return KeyType(GenericHotness::Hot); }
+  static KeyType Warm() { return KeyType(GenericHotness::Warm); }
+  static KeyType Cold() { return KeyType(GenericHotness::Cold); }
   static KeyType Partition(uint32_t partition_id) {
     return KeyType((4ULL << 31) | partition_id);
   }
 
-  bool IsHot() const { return code == (1ULL << 31); }
-  bool IsWarm() const { return code == (2ULL << 31); }
-  bool IsCold() const { return code == (3ULL << 31); }
+  bool IsHot() const { return code == GenericHotness::Hot; }
+  bool IsWarm() const { return code == GenericHotness::Warm; }
+  bool IsCold() const { return code == GenericHotness::Cold; }
   bool IsParition() const { return code >> 31 == 4ULL; }
+  bool IsNoType() const { return code == GenericHotness::NoType; }
   uint32_t PartitionId() const { return (uint32_t)code; }
 
   // For Debug
@@ -199,6 +211,16 @@ struct EnvOptions {
   bool enable_hot_separation = true;
 };
 
+class Oracle {
+ public:
+  virtual ~Oracle(){};
+
+  virtual void MergeKeys(std::unordered_map<std::string, uint64_t>& update) = 0;
+  virtual KeyType ProbeKeyType(std::string& key, uint64_t occrrence) = 0;
+  virtual void AddKey(std::string& key, uint64_t occurrence) = 0;
+  virtual void UpdateStats() = 0;
+};
+
 class Env {
  public:
   struct FileAttributes {
@@ -240,6 +262,12 @@ class Env {
     ZnsLog(kCyan, "Env::Dump(): Default implementation\n");
     return;
   };
+
+  virtual std::pair<std::unordered_set<uint64_t>, GenericHotness>
+  GetGCHintsFromFS(void* out_args) {
+    ZnsLog(kCyan, "Env::GetGCHintsFromFS(): Default implementation\n");
+    return {};
+  }
 
   virtual void UpdateCompactionIterStats(
       const CompactionIterationStats* iter_stat) {
@@ -656,6 +684,7 @@ class Env {
   const std::shared_ptr<FileSystem>& GetFileSystem() const;
 
   // If you're adding methods here, remember to add them to EnvWrapper too.
+  virtual std::shared_ptr<Oracle> GetOracle() { return key_oracle_; }
 
  protected:
   // The pointer to an internal structure that will update the
@@ -664,6 +693,10 @@ class Env {
 
   // Pointer to the underlying FileSystem implementation
   std::shared_ptr<FileSystem> file_system_;
+
+  // Pointer to an oracle who can predict hotness of the keys,
+  // which may require support from the underlying file system
+  std::shared_ptr<Oracle> key_oracle_;
 
  private:
   static const size_t kMaxHostNameLen = 256;
@@ -1569,6 +1602,8 @@ class EnvWrapper : public Env {
   void SanitizeEnvOptions(EnvOptions* env_opts) const override {
     target_->SanitizeEnvOptions(env_opts);
   }
+
+  std::shared_ptr<Oracle> GetOracle() override { return target_->GetOracle(); }
 
  private:
   Env* target_;

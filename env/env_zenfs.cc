@@ -9,6 +9,7 @@
 #ifdef WITH_ZENFS
 #include "fs/fs_zenfs.h"
 #include "fs/zbd_zenfs.h"
+#include "libcuckoo/cuckoohash_map.hh"
 #include "utilities/trace/bytedance_metrics_histogram.h"
 #include "utilities/trace/zbd_stat.h"
 
@@ -182,6 +183,152 @@ class ZenfsDirectory : public Directory {
   std::unique_ptr<FSDirectory> target_;
 };
 
+class ZenFSOracle : public Oracle {
+ public:
+  ZenFSOracle(uint64_t limit)
+      : global_version_(0), limit_(limit), evict_rate_(0.1) {}
+  ~ZenFSOracle() override{};
+
+  // fuck I have to sort the @update
+  void MergeKeys(std::unordered_map<std::string, uint64_t>& update) override {
+    std::map<uint64_t, std::vector<std::string>> sorted;
+
+    for (const auto& i : update) {
+      sorted[i.second].push_back(i.first);
+    }
+
+    auto high_occurrence = sorted.rbegin();
+    for (int i = 0;
+         i < update.size() * evict_rate_ && high_occurrence != sorted.rend();) {
+      for (auto& k : high_occurrence->second) {
+        AddKey(k, high_occurrence->first);
+        ++i;
+      }
+      ++high_occurrence;
+    }
+  }
+
+  KeyType ProbeKeyType(std::string& key, uint64_t occurrence) override {
+    if (auto h = key_set_.find(key); h != nullptr) {
+      return h->hotness;
+    }
+
+    if (occurrence >= stats_.average_occurrence) {
+      return KeyType::Hot();
+    }
+
+    // if (limit_ < key_set_.size()) {
+    // return KeyHotnessType::Warm;
+    // }
+
+    if (occurrence >= stats_.min_occurrence) {
+      return KeyType::Warm();
+    } else {
+      return KeyType::Cold();
+    }
+  }
+
+  void AddKey(std::string& key, uint64_t occurrence) override {}
+
+  void UpdateStats() override {
+    auto it = occurrence_map_.begin();
+
+    auto total = 0.;
+    for (; it != occurrence_map_.end();) {
+      total += it->first * it->second.size();
+      if (it->second.size() == 0) {
+        it = occurrence_map_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    stats_.max_occurrence = occurrence_map_.rbegin()->first;
+    stats_.min_occurrence = occurrence_map_.begin()->first;
+    stats_.average_occurrence = total / key_set_.size();
+  }
+
+  void Aging() { ++global_version_; }
+
+  /*
+   * Try to release at most <wanted> keys from the hint set.
+   */
+  void MakeSpace(uint64_t wanted) {
+    for (auto& [_, v] : occurrence_map_) {
+      for (auto it = v.begin(); it != v.end();) {
+        // not sure whether this is good
+        auto hint = key_set_.find(*it);
+        if (global_version_ - hint->local_version >= 2) {
+          key_set_.erase(*it);
+          it = v.erase(it);
+          if (--wanted == 0) {
+            goto leave;
+          }
+        } else {
+          ++it;
+        }
+      }
+    }
+
+    if (wanted != 0) {
+      for (auto& [_, v] : occurrence_map_) {
+        for (auto it = v.begin(); it != v.end();) {
+          // not sure whether this is good
+          key_set_.erase(*it);
+          it = v.erase(it);
+          if (--wanted == 0) goto leave;
+        }
+      }
+    }
+
+  leave:
+    UpdateStats();
+  }
+
+ private:
+  struct KeyHint {
+    std::string key;
+    uint64_t local_version;
+    uint64_t occurrence;
+    KeyType hotness;
+    KeyHint() : local_version(0), occurrence(0), hotness(KeyType::NoType()) {}
+    KeyHint(const KeyHint&) = default;
+    KeyHint(KeyHint&&) = default;
+    KeyHint& operator=(const KeyHint&) = default;
+    KeyHint& operator=(KeyHint&&) = default;
+
+    void Aging() { ++local_version; }
+
+    bool IsHot() const { return hotness.IsHot(); }
+
+    bool IsWarm() const { return hotness.IsWarm(); }
+
+    bool IsCold() const { return hotness.IsCold(); }
+  };
+
+  struct KeyHintSetStats {
+    uint64_t max_occurrence = 10;
+    uint64_t min_occurrence = 10;
+    double average_occurrence = 10.0;
+  } stats_;
+  uint64_t global_version_;
+  uint64_t limit_;
+  double evict_rate_;
+
+  libcuckoo::cuckoohash_map<std::string, std::shared_ptr<KeyHint>> key_set_;
+  std::map<uint64_t, std::unordered_set<std::string>> occurrence_map_;
+
+  void Evict() {
+    auto wanted = evict_rate_ * limit_;
+
+    if (key_set_.size() - wanted > limit_) {
+      wanted += (key_set_.size() - limit_);
+    }
+
+    MakeSpace(wanted);
+  }
+};
+
 class ZenfsEnv : public EnvWrapper {
  public:
   // Initialize an EnvWrapper that delegates all calls to *t
@@ -193,10 +340,19 @@ class ZenfsEnv : public EnvWrapper {
     // auto metrics = std::make_shared<NoZenFSMetrics>();
     auto metrics = std::make_shared<BDZenFSMetrics>(metrics_reporter_factory_,
                                                     bytedance_tags_, nullptr);
+    // XTODO: full implementation required here
+    key_oracle_ = std::make_shared<ZenFSOracle>(30000);
     return NewZenFS(&fs_, zdb_path, metrics);
   }
 
   void Dump() override { fs_->Dump(); }
+
+  std::pair<std::unordered_set<uint64_t>, GenericHotness> GetGCHintsFromFS(
+      void* out_args) override {
+    return fs_->GetGCHintsFromFS(out_args);
+  }
+
+  std::shared_ptr<Oracle> GetOracle() override { return key_oracle_; }
 
   void UpdateCompactionIterStats(
       const CompactionIterationStats* iter_stat) override {
@@ -583,6 +739,7 @@ class ZenfsEnv : public EnvWrapper {
  private:
   Env* target_;
   FileSystem* fs_;
+  std::shared_ptr<Oracle> key_oracle_;
   std::string metrics_tag_;
 };
 
