@@ -10,6 +10,7 @@
 #pragma once
 
 #include "db/dbformat.h"
+#include "rocksdb/statistics.h"
 #include "rocksdb/terark_namespace.h"
 #include "rocksdb/types.h"
 
@@ -32,7 +33,8 @@ using InternalIterator = InternalIteratorBase<LazyBuffer>;
 // REQUIRES: n >= 0
 extern InternalIterator* NewMergingIterator(
     const InternalKeyComparator* comparator, InternalIterator** children, int n,
-    Arena* arena = nullptr, bool prefix_seek_mode = false);
+    Arena* arena = nullptr, bool prefix_seek_mode = false, Env* env = nullptr,
+    Statistics* stat = nullptr);
 
 class MergingIterator;
 

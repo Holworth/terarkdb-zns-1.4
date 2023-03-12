@@ -15,8 +15,10 @@
 #include "db/dbformat.h"
 #include "monitoring/perf_context_imp.h"
 #include "rocksdb/comparator.h"
+#include "rocksdb/env.h"
 #include "rocksdb/iterator.h"
 #include "rocksdb/options.h"
+#include "rocksdb/statistics.h"
 #include "rocksdb/terark_namespace.h"
 #include "table/internal_iterator.h"
 #include "table/iter_heap.h"
@@ -40,13 +42,16 @@ class MergingIterator : public InternalIterator {
  public:
   MergingIterator(const InternalKeyComparator* comparator,
                   InternalIterator** children, int n, bool is_arena_mode,
-                  bool prefix_seek_mode)
+                  bool prefix_seek_mode, Env* env = nullptr,
+                  Statistics* stat = nullptr)
       : is_arena_mode_(is_arena_mode),
         comparator_(comparator),
         current_(nullptr),
         direction_(kForward),
         minHeap_(comparator_),
-        prefix_seek_mode_(prefix_seek_mode) {
+        prefix_seek_mode_(prefix_seek_mode),
+        env_(env),
+        stat_(stat) {
     children_.resize(n);
     for (int i = 0; i < n; i++) {
       children_[i].Set(children[i]);
@@ -84,6 +89,10 @@ class MergingIterator : public InternalIterator {
   virtual ~MergingIterator() {
     for (auto& child : children_) {
       child.DeleteIter(is_arena_mode_);
+    }
+    if (stat_) {
+      stat_->measureTime(GC_MERGING_ITERATOR_READ, merging_next_time_);
+      stat_->measureTime(GC_MERGING_ITERATOR_HEAP_DOWN, heap_topdown_time_);
     }
   }
 
@@ -197,17 +206,29 @@ class MergingIterator : public InternalIterator {
     assert(current_ == CurrentForward());
 
     // as the current points to the current record. move the iterator forward.
-    current_->Next();
+    {
+      auto start = env_->NowMicros();
+      current_->Next();
+      merging_next_time_ += (env_->NowMicros() - start);
+    }
     if (current_->Valid()) {
       // current is still valid after the Next() call above.  Call
       // replace_top() to restore the heap property.  When the same child
       // iterator yields a sequence of keys, this is cheap.
       assert(current_->status().ok());
-      minHeap_.replace_top(current_);
+      {
+        auto start = env_->NowMicros();
+        minHeap_.replace_top(current_);
+        heap_topdown_time_ += (env_->NowMicros() - start);
+      }
     } else {
       // current stopped being valid, remove it from the heap.
       considerStatus(current_->status());
-      minHeap_.pop();
+      {
+        auto start = env_->NowMicros();
+        minHeap_.pop();
+        heap_topdown_time_ += (env_->NowMicros() - start);
+      }
     }
     current_ = CurrentForward();
   }
@@ -303,10 +324,15 @@ class MergingIterator : public InternalIterator {
   Direction direction_;
   MergerMinIterHeap minHeap_;
   bool prefix_seek_mode_;
+  Env* env_;
+  Statistics* stat_ = nullptr;
 
   // Max heap is used for reverse iteration, which is way less common than
   // forward.  Lazily initialize it to save memory.
   std::unique_ptr<MergerMaxIterHeap> maxHeap_;
+
+  uint64_t heap_topdown_time_ = 0;  // The calculation time
+  uint64_t merging_next_time_ = 0;  // The time for child to call next
 
   void SwitchToForward();
 
@@ -358,7 +384,8 @@ void MergingIterator::InitMaxHeap() {
 
 InternalIterator* NewMergingIterator(const InternalKeyComparator* cmp,
                                      InternalIterator** list, int n,
-                                     Arena* arena, bool prefix_seek_mode) {
+                                     Arena* arena, bool prefix_seek_mode,
+                                     Env* env, Statistics* stat) {
   assert(n >= 0);
   if (n == 0) {
     return NewEmptyInternalIterator<LazyBuffer>(arena);
@@ -366,10 +393,10 @@ InternalIterator* NewMergingIterator(const InternalKeyComparator* cmp,
     return list[0];
   } else {
     if (arena == nullptr) {
-      return new MergingIterator(cmp, list, n, false, prefix_seek_mode);
+      return new MergingIterator(cmp, list, n, false, prefix_seek_mode, env, stat);
     } else {
       auto mem = arena->AllocateAligned(sizeof(MergingIterator));
-      return new (mem) MergingIterator(cmp, list, n, true, prefix_seek_mode);
+      return new (mem) MergingIterator(cmp, list, n, true, prefix_seek_mode, env, stat);
     }
   }
 }

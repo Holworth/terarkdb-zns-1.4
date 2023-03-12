@@ -328,6 +328,15 @@ enum Histograms : uint32_t {
   // ZNS related
   ZNS_GC_MICRO,
 
+  // The time for each ProcessGarbageCollection time
+  GC_PROCESS_TIME,
+
+  // Garbage collection related states
+  GC_MERGING_ITERATOR_HEAP_DOWN,
+  GC_MERGING_ITERATOR_READ,
+  GC_MERGING_ITERATOR_WRITE,
+  GC_GET_KEY_MICROS,
+
   HISTOGRAM_ENUM_MAX,
 };
 

@@ -180,6 +180,11 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
     {PICK_GARBAGE_COLLECTION_TIME, "rocksdb.pick.gc.micros"},
     {INSTALL_SUPER_VERSION_TIME, "rocksdb.install.super.version.micros"},
     {ZNS_GC_MICRO, "rocksdb.db.zns_gc.micros"},
+    {GC_PROCESS_TIME, "rocksdb.db.process_gc.micros"},
+    {GC_MERGING_ITERATOR_HEAP_DOWN, "rocksdb.gc.merging_iterator_heap_down.micros"},
+    {GC_MERGING_ITERATOR_READ, "rocksdb.gc.merging_iterator_read.micros"},
+    {GC_MERGING_ITERATOR_WRITE, "rocksdb.gc.merging_iterator_write.micros"},
+    {GC_GET_KEY_MICROS, "rocksdb.gc.get_key.micros"},
     {BUILD_VERSION_TIME, "rocksdb.build.version.micros"},
 };
 

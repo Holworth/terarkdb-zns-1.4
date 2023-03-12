@@ -9,6 +9,9 @@
 
 #include "db/version_set.h"
 
+#include <sys/stat.h>
+#include "rocksdb/statistics.h"
+
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
 #endif
@@ -379,7 +382,7 @@ struct MarkedFilesComp {
 
 }  // anonymous namespace
 
-VersionStorageInfo::~VersionStorageInfo() { delete[](files_ - 1); }
+VersionStorageInfo::~VersionStorageInfo() { delete[] (files_ - 1); }
 
 Version::~Version() {
   assert(refs_ == 0);
@@ -3327,7 +3330,7 @@ Status VersionSet::ProcessManifestWrites(std::deque<ManifestWriter>& writers,
 
   // Append the old manifest file to the obsolete_manifest_ list to be deleted
   // by PurgeObsoleteFiles later.
-  // (kqh) Delete old manifest file by first add them into an obsolete list 
+  // (kqh) Delete old manifest file by first add them into an obsolete list
   if (s.ok() && new_descriptor_log) {
     obsolete_manifests_.emplace_back(
         DescriptorFileName("", manifest_file_number_));
@@ -4153,7 +4156,7 @@ Status VersionSet::ReduceNumberOfLevels(const std::string& dbname,
     new_files_list[new_levels - 1] = vstorage->LevelFiles(first_nonempty_level);
   }
 
-  delete[](vstorage->files_ - 1);
+  delete[] (vstorage->files_ - 1);
   vstorage->files_ = new_files_list;
   vstorage->num_levels_ = new_levels;
 
@@ -4646,7 +4649,7 @@ void VersionSet::AddLiveFiles(std::vector<FileDescriptor>* live_list) {
 
 InternalIterator* VersionSet::MakeInputIterator(
     const Compaction* c, RangeDelAggregator* range_del_agg,
-    const EnvOptions& env_options_compactions) {
+    const EnvOptions& env_options_compactions, Statistics* stat) {
   auto cfd = c->column_family_data();
   ReadOptions read_options;
   read_options.verify_checksums = true;
@@ -4696,7 +4699,8 @@ InternalIterator* VersionSet::MakeInputIterator(
   assert(num <= space);
   InternalIterator* result =
       NewMergingIterator(&c->column_family_data()->internal_comparator(), list,
-                         static_cast<int>(num));
+                         static_cast<int>(num), nullptr, false, env_,
+                        stat);
   delete[] list;
   return result;
 }

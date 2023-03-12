@@ -45,6 +45,7 @@
 #include "options/db_options.h"
 #include "port/port.h"
 #include "rocksdb/env.h"
+#include "rocksdb/statistics.h"
 #include "rocksdb/terark_namespace.h"
 #include "util/event_logger.h"
 
@@ -1081,7 +1082,7 @@ class VersionSet {
   // The caller should delete the iterator when no longer needed.
   InternalIterator* MakeInputIterator(
       const Compaction* c, RangeDelAggregator* range_del_agg,
-      const EnvOptions& env_options_compactions);
+      const EnvOptions& env_options_compactions, Statistics* stat = nullptr);
 
   // Add all files listed in any live version to *live.
   void AddLiveFiles(std::vector<FileDescriptor>* live_list);

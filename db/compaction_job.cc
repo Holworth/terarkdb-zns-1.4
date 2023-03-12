@@ -220,6 +220,9 @@ struct CompactionJob::SubcompactionState {
   bool seen_key = false;
   std::string compression_dict;
 
+  // The total write time for a ProcessGarbageCollection() work
+  uint64_t gc_write_time_ = 0;
+
   SubcompactionState(Compaction* c, const Slice* _start, const Slice* _end,
                      uint64_t size = 0)
       : compaction(c),
@@ -1460,9 +1463,9 @@ Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options) {
          << compact_->num_output_records << "num_subcompactions"
          << compact_->sub_compact_states.size() << "output_compression"
          << CompressionTypeToString(compact_->compaction->output_compression());
-         // << "output_blob_compression"
-         // << CompressionTypeToString(
-         //        compact_->compaction->output_blob_compression());
+  // << "output_blob_compression"
+  // << CompressionTypeToString(
+  //        compact_->compaction->output_blob_compression());
 
   if (compaction_job_stats_ != nullptr) {
     stream << "num_single_delete_mismatches"
@@ -1924,7 +1927,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
     // Current output file should be ended
     if (output_file_ended) {
       CompactionIterationStats range_del_out_stats;
-      // FinishCompactionOutputFile() resets the builder of this sub_compact 
+      // FinishCompactionOutputFile() resets the builder of this sub_compact
       // work to be nullptr and a new builder will be created in the next loop
       status = FinishCompactionOutputFile(input_status, sub_compact,
                                           &range_del_agg, &range_del_out_stats,
@@ -2049,10 +2052,14 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
 
 void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   assert(sub_compact != nullptr);
+
+  uint64_t gc_getkey_time = 0;
+
+  StopWatch sw(env_, stats_, GC_PROCESS_TIME);
   ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
 
   std::unique_ptr<InternalIterator> input(versions_->MakeInputIterator(
-      sub_compact->compaction, nullptr, env_options_for_read_));
+      sub_compact->compaction, nullptr, env_options_for_read_, stats_));
 
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_COMPACTION_PROCESS_KV);
@@ -2083,7 +2090,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
 
   auto create_iter = [&](Arena* /* arena */) {
     return versions_->MakeInputIterator(sub_compact->compaction, nullptr,
-                                        env_options_for_read_);
+                                        env_options_for_read_, stats_);
   };
   auto filter_conflict = [&](const Slice& ikey, const LazyBuffer& value) {
     std::lock_guard<std::mutex> lock(conflict_map_mutex);
@@ -2109,6 +2116,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   uint64_t last_file_number = uint64_t(-1);
   IterKey iter_key;
   ParsedInternalKey ikey;
+
   struct {
     uint64_t input = 0;
     uint64_t garbage_type = 0;
@@ -2116,6 +2124,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     uint64_t file_number_mismatch = 0;
   } counter;
   std::vector<std::pair<uint64_t, FileMetaData*>> blob_meta_cache;
+
   assert(!sub_compact->compaction->inputs()->empty());
   blob_meta_cache.reserve(sub_compact->compaction->inputs()->front().size());
   while (status.ok() && !cfd->IsDropped() && input->Valid()) {
@@ -2129,11 +2138,13 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     }
     uint64_t blob_file_number = input->value().file_number();
     FileMetaData* blob_meta;
+
     auto find_cache = std::find_if(
         blob_meta_cache.begin(), blob_meta_cache.end(),
         [blob_file_number](const std::pair<uint64_t, FileMetaData*>& pair) {
           return pair.first == blob_file_number;
         });
+
     if (find_cache != blob_meta_cache.end()) {
       blob_meta = find_cache->second;
     } else {
@@ -2157,8 +2168,19 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
       ValueType type = kTypeDeletion;
       SequenceNumber seq = kMaxSequenceNumber;
       LazyBuffer value;
+
+      // Monitoring the time for gc_get_key:
+      // 
+      // GetKey returns the latest sequence number of a specified key. All 
+      // obsolete sequence number will be dropped here. 
+      // 
+      // However, according to our measurement, the GetKey() call occupies more
+      // than 50% of the total time of this ProcessGarbageCollection() call. 
+      auto start = env_->NowMicros();
       input_version->GetKey(ikey.user_key, iter_key.GetInternalKey(), &s, &type,
                             &seq, &value, *blob_meta);
+      gc_getkey_time += (env_->NowMicros() - start);
+
       if (s.IsNotFound()) {
         ++counter.get_not_found;
         break;
@@ -2189,7 +2211,11 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
 
       assert(sub_compact->blob_builder != nullptr);
       assert(sub_compact->current_blob_output() != nullptr);
-      status = sub_compact->blob_builder->Add(curr_key, value);
+      {
+        auto start = env_->NowMicros();
+        status = sub_compact->blob_builder->Add(curr_key, value);
+        sub_compact->gc_write_time_ += (env_->NowMicros() - start);
+      }
       if (!status.ok()) {
         break;
       }
@@ -2228,7 +2254,11 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
         *sub_compact->compaction->inputs(), dependence_map, input_version,
         &inheritance_tree, &inheritance_tree_pruge_count);
   }
+
+  auto start = env_->NowMicros();
   Status s = FinishCompactionOutputBlob(status, sub_compact, inheritance_tree);
+  sub_compact->gc_write_time_ += (env_->NowMicros() - start);
+
   if (status.ok()) {
     status = s;
   }
@@ -2286,6 +2316,8 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
 
   input.reset();
   sub_compact->status = status;
+  stats_->measureTime(GC_MERGING_ITERATOR_WRITE, sub_compact->gc_write_time_);
+  stats_->measureTime(GC_GET_KEY_MICROS, gc_getkey_time);
 }
 
 void CompactionJob::RecordDroppedKeys(
@@ -2931,8 +2963,8 @@ Status CompactionJob::OpenCompactionOutputFile(
   //
   writable_file->SetFileLevel(sub_compact->compaction->output_level());
   Status s = NewWritableFile(env_, fname, &writable_file, env_options);
-  // ZnsLog(Color::kBlue, ">>>> xzw >>>> Compacting file %s to level %d\n", fname.c_str(),
-        // sub_compact->compaction->output_level());
+  // ZnsLog(Color::kBlue, ">>>> xzw >>>> Compacting file %s to level %d\n",
+  // fname.c_str(), sub_compact->compaction->output_level());
   if (!s.ok()) {
     ROCKS_LOG_ERROR(
         db_options_.info_log,
