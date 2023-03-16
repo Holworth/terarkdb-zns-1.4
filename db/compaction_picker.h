@@ -112,6 +112,11 @@ class CompactionPicker {
                                     VersionStorageInfo* vstorage,
                                     LogBuffer* log_buffer);
 
+  // Pick files from ZenFS to do garbage collection
+  Compaction* PickZNSGarbageCollection(
+      const std::string& cf_name, const MutableCFOptions& mutable_cf_options,
+      VersionStorageInfo* vstorage, LogBuffer* log_buffer, Env* env);
+
   virtual void InitFilesBeingCompact(const MutableCFOptions& mutable_cf_options,
                                      VersionStorageInfo* vstorage,
                                      const InternalKey* begin,

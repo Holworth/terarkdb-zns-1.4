@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <deque>
+#include <iostream>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "db/compaction_iteration_stats.h"
@@ -628,6 +630,10 @@ Status BuildPartitionTable(
     std::vector<TableProperties>* table_properties_vec, int level,
     double compaction_load, const uint64_t creation_time,
     const uint64_t oldest_key_time, Env::WriteLifeTimeHint write_hint) {
+
+  // std::cout << "[BuildPartitionTable]: " << std::this_thread::get_id()
+  //           << std::endl;
+
   assert((column_family_id ==
           TablePropertiesCollectorFactory::Context::kUnknownColumnFamily) ==
          column_family_name.empty());
@@ -936,6 +942,7 @@ Status BuildPartitionTable(
         ioptions.merge_operator->IsStableMerge()) {
       builder->SetSecondPassIterator(second_pass_iter.get());
     }
+
     c_iter.SeekToFirst();
     for (; s.ok() && c_iter.Valid(); c_iter.Next()) {
       s = builder->Add(c_iter.key(), c_iter.value());

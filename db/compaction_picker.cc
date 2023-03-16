@@ -10,7 +10,9 @@
 #include "db/compaction_picker.h"
 
 #include "db/compaction.h"
+#include "fs/log.h"
 #include "rocksdb/env.h"
+#include "rocksdb/listener.h"
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
@@ -637,24 +639,19 @@ Compaction* CompactionPicker::CompactFiles(
 
   params.max_subcompactions = compact_options.max_subcompactions;
   params.manual_compaction = true;
-  params.placement_id = compact_options.placement_id;
+  params.placement_id = compact_options.hotness.PartitionId();
   if (output_level == -1) {
 #ifndef WITH_ZENFS
     params.compaction_type = kGarbageCollection;
 #else
-    switch (compact_options.hotness) {
-      case GenericHotness::Hot:
-        params.compaction_type = kZNSHotGarbageCollection;
-        break;
-      case GenericHotness::Warm:
-        params.compaction_type = kZNSWarmGarbageCollection;
-        break;
-      case GenericHotness::Cold:
-        params.compaction_type = kZNSColdGarbageCollection;
-        break;
-      default:
-        params.compaction_type = kZNSPartitionGarbageCollection;
-        break;
+    if (compact_options.hotness.IsHot()) {
+      params.compaction_type = kZNSHotGarbageCollection;
+    } else if (compact_options.hotness.IsWarm()) {
+      params.compaction_type = kZNSWarmGarbageCollection;
+    } else if (compact_options.hotness.IsCold()) {
+      params.compaction_type = kZNSWarmGarbageCollection;
+    } else if (compact_options.hotness.IsParition()) {
+      params.compaction_type = kZNSPartitionGarbageCollection;
     }
 #endif
   }
@@ -1009,6 +1006,107 @@ Compaction* CompactionPicker::PickGarbageCollection(
       params.inputs, CompactionReason::kGarbageCollection);
 
   Compaction* c = RegisterCompaction(new Compaction(std::move(params)));
+  vstorage->ComputeCompactionScore(ioptions_, mutable_cf_options);
+
+  return c;
+}
+
+//
+// Try to perform garbage collection from certain column family.
+// Resulting as a pointer of compaction, nullptr as nothing to do.
+// GC picker's principle:
+// 1. Get garbage collection hints from ZenFS, ZenFS provides a zone with
+//    highest garbages and all files located in this zone.
+//
+// 2. Database traverses all files located in this zone and check if the file
+//    number matches. If matches, add this file into GC candidate queue.
+//
+// 3. If the size of GC candidate queue does not equal to the number of files
+//    provided by ZenFS, this Garbage Collection should not be done
+//
+Compaction* CompactionPicker::PickZNSGarbageCollection(
+    const std::string& cf_name, const MutableCFOptions& mutable_cf_options,
+    VersionStorageInfo* vstorage, LogBuffer* log_buffer, Env* env) {
+  auto [gc_file_in_zone, hotness] = env->GetGCHintsFromFS(nullptr);
+  if (gc_file_in_zone.empty()) {
+    // The FS doesn't want a garbage collection work
+    return nullptr;
+  }
+
+  ZnsLog(kCyan, "Pick File for GC: ");
+  for (const auto &t : gc_file_in_zone) {
+    printf("%lu ", t);
+  }
+  puts("");
+
+  auto require_gc_file_cnt = gc_file_in_zone.size();
+  auto& hidden_files = vstorage->LevelFiles(-1);
+
+  // The input for a GarbageCollection Job
+  std::vector<CompactionInputFiles> inputs(1);
+  auto& input = inputs.front();
+  input.level = -1;
+
+  // Check each file and add them into GC input if it matches the gc file list
+  uint64_t idx = 0;
+  for (; idx < hidden_files.size() && !hidden_files[idx]->is_gc_forbidden();
+       ++idx) {
+    FileMetaData* f = hidden_files[idx];
+    if (!f->is_gc_permitted() || f->being_compacted) {
+      continue;
+    }
+    if (gc_file_in_zone.count(f->fd.GetNumber()) > 0) {
+      input.files.push_back(f);
+      // Early break in case that all blob files get traversed.
+      if (input.files.size() == require_gc_file_cnt) {
+        break;
+      }
+    }
+  }
+
+  // The ZNS requires to reclaim some specific files but the database does not
+  // allow such things. Directly return nullptr to indicate the construction
+  // of this GC job fails.
+  if (input.size() != require_gc_file_cnt) {
+    return nullptr;
+  }
+
+  int bottommost_level = vstorage->num_levels() - 1;
+  // Set compaction parameters
+  CompactionParams params(vstorage, ioptions_, mutable_cf_options);
+  params.inputs = std::move(inputs);
+  params.output_level = -1;
+  // params.num_antiquation = ???; // Can we ommit this field?
+  params.max_compaction_bytes = LLONG_MAX;
+  params.output_path_id = GetPathId(ioptions_, mutable_cf_options, 1);
+  params.compression = GetCompressionType(
+      ioptions_, vstorage, mutable_cf_options, bottommost_level, 1, true);
+  params.compression_opts =
+      GetCompressionOptions(ioptions_, vstorage, bottommost_level, true);
+  params.max_subcompactions = 1;
+
+  // ZNS: Can we omit this?
+  params.score = vstorage->total_garbage_ratio();
+
+  CompactionReason cr = CompactionReason::kGarbageCollection;
+  params.compaction_type = kGarbageCollection;
+  // Set the compaction type accordingly based on the hints provided by ZenFS
+  if (hotness.IsHot()) {
+    params.sub_compaction_type = kZNSHotGarbageCollection;
+    cr = CompactionReason::kZNSHotGarbageCollection;
+  } else if (hotness.IsWarm()) {
+    params.sub_compaction_type = kZNSWarmGarbageCollection;
+    cr = CompactionReason::kZNSWarmGarbageCollection;
+  } else if (hotness.IsParition()) {
+    params.sub_compaction_type = kZNSPartitionGarbageCollection;
+    params.placement_id = hotness.PartitionId();
+    cr = CompactionReason::kZNSPartitionGarbageCollection;
+  }
+
+  params.compaction_reason = ConvertInputsCompactionReason(params.inputs, cr);
+
+  Compaction* c = RegisterCompaction(new Compaction(std::move(params)));
+  // ZNS: Can we omit this?
   vstorage->ComputeCompactionScore(ioptions_, mutable_cf_options);
 
   return c;

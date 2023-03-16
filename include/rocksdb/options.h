@@ -1382,8 +1382,7 @@ struct CompactionOptions {
   uint32_t max_subcompactions;
 
   // ZNS:
-  GenericHotness hotness;
-  uint64_t placement_id;
+  HotnessType hotness;
 
   CompactionOptions()
       : compression(kSnappyCompression),

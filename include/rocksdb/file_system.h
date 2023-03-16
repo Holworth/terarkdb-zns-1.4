@@ -234,7 +234,7 @@ class FileSystem {
   // 
   // The input @out_args is used for users to offer user-defined
   // information from the FS to the DB.
-  virtual std::pair<std::unordered_set<uint64_t>, GenericHotness>
+  virtual std::pair<std::unordered_set<uint64_t>, HotnessType>
   GetGCHintsFromFS(void *out_args) = 0;
 
   // Handles the event when a new DB or a new ColumnFamily starts using the
@@ -625,6 +625,12 @@ class FileSystem {
   //
   virtual void UpdateTableProperties(const std::string& fname,
                                      const TableProperties* tbl_prop){};
+  
+  //
+  // (ZNS):
+  // The upper layer DB calls for release the resource of GC write zone of a 
+  // specific partition
+  virtual void MaybeReleaseGCWriteZone(HotnessType type) {}
 
  private:
   void operator=(const FileSystem&);
@@ -1180,7 +1186,7 @@ class FileSystemWrapper : public FileSystem {
 
   void Dump() override { target_->Dump(); }
 
-  std::pair<std::unordered_set<uint64_t>, GenericHotness> 
+  std::pair<std::unordered_set<uint64_t>, HotnessType> 
   GetGCHintsFromFS(void *out_args) override {
     return target_->GetGCHintsFromFS(out_args);
   }

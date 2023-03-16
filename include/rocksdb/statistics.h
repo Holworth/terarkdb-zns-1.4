@@ -332,6 +332,27 @@ enum Histograms : uint32_t {
   // Time spent on ZonedBlockDeive::UpdateCompactionIterStats
   ZNS_COMPACTION_ITER_STATS_UPDATE,
 
+  // Time spent on Oracle::Merging
+  ZNS_ORACLE_MERGEKEYS,
+
+  // Time spent on each PickZNSGarbageCollection() call
+  ZNS_PICK_GARBAGE_COLLECTION_TIME,
+
+  // Time spent on ProcessZNSPartitionGarbageCollection
+  ZNS_PROCESS_PARTITION_GC,
+
+  // Total time spent on GetKey() of one GarbageCollection work
+  ZNS_PARTITION_GC_GET_KEY,
+
+  // The total time spent on MergingIterator::Next() during a GC task
+  ZNS_PARTITION_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
+
+  // The total time spent on output file during a GC task
+  ZNS_PARTITION_GC_WRITE_TOTAL_MICROS,
+
+  // Time spent on ProcessZNSHotPartitionGarbageCollection
+  ZNS_PROCESS_HOT_GC,
+
   HISTOGRAM_ENUM_MAX,
 };
 

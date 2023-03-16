@@ -289,7 +289,7 @@ class LegacyFileSystemWrapper : public FileSystem {
 
   void Dump() override { printf("Legacy File System Dumps Nichts\n"); };
 
-  std::pair<std::unordered_set<uint64_t>, GenericHotness> GetGCHintsFromFS(
+  std::pair<std::unordered_set<uint64_t>, HotnessType> GetGCHintsFromFS(
       void* out_args) override {
     return {};
   }

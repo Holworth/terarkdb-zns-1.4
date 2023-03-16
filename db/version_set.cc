@@ -131,6 +131,10 @@ class FilePicker {
     (void)files;
 #endif
     // Setup member variables to search first level.
+    // (ZNS): PrepareNextLevel() search from Level0 and preceeds to the next
+    // level until some file contains the target key. Once stopped at some
+    // level, PrepareNextLevel() set the curr_file_level_ to the target level,
+    // and set curr_file_index_ to the file that may contain the user key.
     search_ended_ = !PrepareNextLevel();
     if (!search_ended_) {
       // Prefetch Level 0 table data to avoid cache miss if possible.
@@ -379,7 +383,7 @@ struct MarkedFilesComp {
 
 }  // anonymous namespace
 
-VersionStorageInfo::~VersionStorageInfo() { delete[](files_ - 1); }
+VersionStorageInfo::~VersionStorageInfo() { delete[] (files_ - 1); }
 
 Version::~Version() {
   assert(refs_ == 0);
@@ -1460,12 +1464,18 @@ void Version::GetKey(const Slice& user_key, const Slice& ikey, Status* status,
                      const FileMetaData& blob) {
   RecordTick(db_statistics_, GC_GET_KEYS);
   bool value_found;
+  // Note that this function set separate_helper to be nullptr, which means the 
+  // the value would not be combined when it is found. 
+  // The related code can be found in the following file and line:
+  //   get_context.cc: 196 ~ 203
   GetContext get_context(cfd_->internal_comparator().user_comparator(), nullptr,
                          cfd_->ioptions()->info_log, db_statistics_,
                          GetContext::kNotFound, user_key, value, &value_found,
                          nullptr, nullptr, nullptr, env_, seq);
   ReadOptions options;
 
+  // Construct the FilePicker to iteratively return all files that may contain 
+  // the target ikey. 
   FilePicker fp(
       storage_info_.files_, user_key, ikey, &storage_info_.level_files_brief_,
       storage_info_.num_non_empty_levels_, &storage_info_.file_indexer_,
@@ -3327,7 +3337,7 @@ Status VersionSet::ProcessManifestWrites(std::deque<ManifestWriter>& writers,
 
   // Append the old manifest file to the obsolete_manifest_ list to be deleted
   // by PurgeObsoleteFiles later.
-  // (kqh) Delete old manifest file by first add them into an obsolete list 
+  // (kqh) Delete old manifest file by first add them into an obsolete list
   if (s.ok() && new_descriptor_log) {
     obsolete_manifests_.emplace_back(
         DescriptorFileName("", manifest_file_number_));
@@ -4153,7 +4163,7 @@ Status VersionSet::ReduceNumberOfLevels(const std::string& dbname,
     new_files_list[new_levels - 1] = vstorage->LevelFiles(first_nonempty_level);
   }
 
-  delete[](vstorage->files_ - 1);
+  delete[] (vstorage->files_ - 1);
   vstorage->files_ = new_files_list;
   vstorage->num_levels_ = new_levels;
 

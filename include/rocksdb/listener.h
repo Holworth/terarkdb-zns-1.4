@@ -143,6 +143,11 @@ enum class CompactionReason : int {
   kRangeDeletion,
   // total number of compaction reasons, new reasons must be added above this.
   kNumOfReasons,
+
+  kZNSGarbageCollection,
+  kZNSPartitionGarbageCollection,
+  kZNSHotGarbageCollection,
+  kZNSWarmGarbageCollection,
 };
 
 enum class FlushReason : int {

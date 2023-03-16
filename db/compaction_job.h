@@ -134,6 +134,9 @@ class CompactionJob {
   Status ProcessZNSPartitionGarbageCollection(
       SubcompactionState* sub_compact, ColumnFamilyData* cfd,
       std::unique_ptr<InternalIterator> input);
+  Status ProcessZNSPartitionGarbageCollectionWithNoTriaging(
+      SubcompactionState* sub_compact, ColumnFamilyData* cfd,
+      std::unique_ptr<InternalIterator> input);
   void ProcessZNSGarbageCollection(SubcompactionState* sub_compact);
 
   Status FinishCompactionOutputFile(
@@ -157,11 +160,11 @@ class CompactionJob {
   // and related fields in SubcompactionState but assigns the output files
   // PlacementFileType to be either Hot or Warm.
   //
-  // In OpenSpecialCompactionOutputBlob, we use the hot_blob_builder,
+  // In OpenCompactionOutputBlob, we use the hot_blob_builder,
   // warm_blob_builder and partition_blob_builder accordingly.
   Status OpenCompactionOutputBlob(SubcompactionState* sub_compact);
-  Status OpenSpecialCompactionOutputBlobs(SubcompactionState* subcompact,
-                                          PlacementFileType type);
+  Status OpenCompactionOutputBlob(SubcompactionState* subcompact,
+                                  PlacementFileType type);
 
   // This helper initializes the blob_outfile and blob_builder fields in the
   // subcompact. The default parameter use_default_blob will decide whether

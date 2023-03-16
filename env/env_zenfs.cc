@@ -209,8 +209,8 @@ class ZenFSOracle : public Oracle {
   }
 
   KeyType ProbeKeyType(std::string& key, uint64_t occurrence) override {
-    if (auto h = key_set_.find(key); h != nullptr) {
-      return h->hotness;
+    if (key_set_.contains(key)) {
+      return key_set_.find(key)->hotness;
     }
 
     if (occurrence >= stats_.average_occurrence) {
@@ -228,7 +228,55 @@ class ZenFSOracle : public Oracle {
     }
   }
 
-  void AddKey(std::string& key, uint64_t occurrence) override {}
+  void AddKey(std::string& key, uint64_t occurrence) override {
+    if (key_set_.size() >= limit_) {
+      if (occurrence < stats_.min_occurrence) {
+        return;
+      } else {
+        if (!key_set_.contains(key)) {
+          Evict();
+        }
+      }
+    }
+
+    if (!key_set_.contains(key)) {
+      auto hint = std::make_shared<KeyHint>();
+      hint->key = key;
+      hint->local_version = global_version_;
+      hint->occurrence = occurrence;
+
+      hint->hotness = ProbeKeyType(key, occurrence);
+
+      double total = stats_.average_occurrence * key_set_.size() + occurrence;
+      key_set_.insert(key, hint);
+      occurrence_map_[occurrence].insert(key);
+
+      stats_.average_occurrence = total / key_set_.size();
+    } else {
+      key_set_.update_fn(key, [&](std::shared_ptr<KeyHint>& value) {
+        value->local_version = global_version_;
+
+        // change occurrence group
+        map_lock.lock();
+        auto arr = occurrence_map_.find(value->occurrence);
+
+        // std::remove(arr->second.begin(), arr->second.end(), key);
+        arr->second.erase(key);
+        value->occurrence += occurrence;
+        occurrence_map_[value->occurrence].insert(key);
+        map_lock.unlock();
+
+        value->hotness = ProbeKeyType(key, value->occurrence);
+      });
+
+      stats_.average_occurrence += (double)occurrence / key_set_.size();
+    }
+
+    stats_.max_occurrence = occurrence_map_.rbegin()->first;
+    stats_.min_occurrence = occurrence_map_.begin()->first;
+    
+    return;
+  }
 
   void UpdateStats() override {
     auto it = occurrence_map_.begin();
@@ -276,7 +324,9 @@ class ZenFSOracle : public Oracle {
           // not sure whether this is good
           key_set_.erase(*it);
           it = v.erase(it);
-          if (--wanted == 0) goto leave;
+          if (--wanted == 0) {
+            goto leave;
+          }
         }
       }
     }
@@ -316,6 +366,8 @@ class ZenFSOracle : public Oracle {
   double evict_rate_;
 
   libcuckoo::cuckoohash_map<std::string, std::shared_ptr<KeyHint>> key_set_;
+
+  std::mutex map_lock;
   std::map<uint64_t, std::unordered_set<std::string>> occurrence_map_;
 
   void Evict() {
@@ -347,7 +399,7 @@ class ZenfsEnv : public EnvWrapper {
 
   void Dump() override { fs_->Dump(); }
 
-  std::pair<std::unordered_set<uint64_t>, GenericHotness> GetGCHintsFromFS(
+  std::pair<std::unordered_set<uint64_t>, HotnessType> GetGCHintsFromFS(
       void* out_args) override {
     return fs_->GetGCHintsFromFS(out_args);
   }
@@ -362,6 +414,10 @@ class ZenfsEnv : public EnvWrapper {
   void UpdateTableProperties(const std::string& fname,
                              const TableProperties* tbl_prop) override {
     fs_->UpdateTableProperties(fname, tbl_prop);
+  }
+
+  void MaybeReleaseGCWriteZone(HotnessType type) override {
+    fs_->MaybeReleaseGCWriteZone(type);
   }
 
   // Return the target to which this Env forwards all calls

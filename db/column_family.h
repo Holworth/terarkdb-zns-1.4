@@ -280,6 +280,9 @@ class ColumnFamilyData {
 
   Compaction* PickGarbageCollection(const MutableCFOptions& mutable_options,
                                     LogBuffer* log_buffer);
+
+  Compaction* PickZNSGarbageCollection(const MutableCFOptions& mutable_options,
+                                       LogBuffer* log_buffer);
   // Check if the passed range overlap with any running compactions.
   // REQUIRES: DB mutex held
   bool RangeOverlapWithCompaction(const Slice& smallest_user_key,

@@ -57,6 +57,7 @@
 #include "util/chash_set.h"
 #include "util/event_logger.h"
 #include "util/hash.h"
+#include "util/log_buffer.h"
 #include "util/repeatable_thread.h"
 #include "util/stop_watch.h"
 #include "util/thread_local.h"
@@ -1282,6 +1283,7 @@ class DBImpl : public DB {
                             uint64_t number, int job_id);
   static void BGWorkCompaction(void* arg);
   static void BGWorkGarbageCollection(void* arg);
+  static void BGWorkZNSGarbageCollection(void* arg);
   // Runs a pre-chosen universal compaction involving bottom level in a
   // separate, bottom-pri thread pool.
   static void BGWorkBottomCompaction(void* arg);
@@ -1291,6 +1293,7 @@ class DBImpl : public DB {
   void BackgroundCallCompaction(PrepickedCompaction* prepicked_compaction,
                                 Env::Priority bg_thread_pri);
   void BackgroundCallGarbageCollection();
+  void BackgroundCallZNSGarbageCollection();
   void BackgroundCallFlush();
   void BackgroundCallPurge();
   Status BackgroundCompaction(bool* madeProgress, JobContext* job_context,
@@ -1299,6 +1302,9 @@ class DBImpl : public DB {
   Status BackgroundGarbageCollection(bool* madeProgress,
                                      JobContext* job_context,
                                      LogBuffer* log_buffer);
+  Status BackgroundZNSGarbageCollection(bool* madeProgress,
+                                        JobContext* job_context,
+                                        LogBuffer* log_buffer);
   Status BackgroundFlush(bool* madeProgress, JobContext* job_context,
                          LogBuffer* log_buffer, FlushReason* reason);
 
@@ -1759,6 +1765,13 @@ class DBImpl : public DB {
   // Callback for when the cached_recoverable_state_ is written to memtable
   // Only to be set during initialization
   std::unique_ptr<PreReleaseCallback> recoverable_state_pre_release_callback_;
+
+  // (ZNS): We set the maximum number of scheduling BGZNSGarbageCollection
+  // for debuging purpose. The system would not call
+  // BackgroundZNSGarbageCollection() if it reaches the limit. Set the limit
+  // number to be the max number of uint64_t to skip the limit
+  uint64_t schedule_zns_gc_limit_ = 1;
+  uint64_t already_scheduled_zns_gc_ = 0;
 
   // No copying allowed
   DBImpl(const DBImpl&);

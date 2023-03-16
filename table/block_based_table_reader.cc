@@ -2444,6 +2444,8 @@ Status BlockBasedTable::Get(const ReadOptions& read_options, const Slice& key,
     for (iiter->Seek(key); iiter->Valid() && !done; iiter->Next()) {
       BlockHandle handle = iiter->value();
 
+      // The target key does not exist in this data block according to the 
+      // filter block information, so simply jump it. 
       bool not_exist_in_filter =
           filter != nullptr && filter->IsBlockBased() == true &&
           !filter->KeyMayMatch(ExtractUserKey(key), prefix_extractor,

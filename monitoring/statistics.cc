@@ -183,6 +183,15 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
     {ZNS_GC_MICRO, "rocksdb.db.zns_gc.micros"},
     {ZNS_COMPACTION_ITER_STATS_UPDATE,
      "rocksdb.db.zns.compaction_iter_stats_update.micros"},
+    {ZNS_ORACLE_MERGEKEYS, "rocksdb.db.zns.oracle_merge.micros"},
+    {ZNS_PROCESS_PARTITION_GC, "rocksdb.db.zns.process_partition_gc.micros"},
+    {ZNS_PROCESS_HOT_GC, "rocksdb.db.zns.process_hot_partition_gc.micros"},
+    {ZNS_PARTITION_GC_GET_KEY, "rocksdb.db.zns.partition_gc.get_key.micros"},
+    {ZNS_PARTITION_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
+     "rocksdb.db.partition_gc.merging_iterator.next.micros"},
+    {ZNS_PARTITION_GC_WRITE_TOTAL_MICROS,
+     "rocksdb.db.partition_gc.write.micros"},
+    {ZNS_PICK_GARBAGE_COLLECTION_TIME, "rocksdb.db.zns.pick_gc.micros"},
     {BUILD_VERSION_TIME, "rocksdb.build.version.micros"},
 };
 

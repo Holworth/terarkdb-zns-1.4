@@ -147,6 +147,7 @@ struct KeyType {
 
 // The File type for ZNS placement, which is the same as a KeyType
 using PlacementFileType = KeyType;
+using HotnessType = KeyType;
 
 // Options while opening a file to read/write
 struct EnvOptions {
@@ -263,7 +264,7 @@ class Env {
     return;
   };
 
-  virtual std::pair<std::unordered_set<uint64_t>, GenericHotness>
+  virtual std::pair<std::unordered_set<uint64_t>, HotnessType>
   GetGCHintsFromFS(void* out_args) {
     ZnsLog(kCyan, "Env::GetGCHintsFromFS(): Default implementation\n");
     return {};
@@ -271,13 +272,18 @@ class Env {
 
   virtual void UpdateCompactionIterStats(
       const CompactionIterationStats* iter_stat) {
-    ZnsLog(kCyan, "Env::UpdateCompactionIterStats(): Default implementation\n");
+    ZnsLog(kCyan, "Env::UpdateCompactionIterStats(): Default implementation");
     return;
   }
 
   virtual void UpdateTableProperties(const std::string& fname,
                                      const TableProperties* tbl_prop) {
-    ZnsLog(kCyan, "Env::UpdateTableProperties(): Default implementation\n");
+    ZnsLog(kCyan, "Env::UpdateTableProperties(): Default implementation");
+    return;
+  }
+
+  virtual void MaybeReleaseGCWriteZone(HotnessType type) {
+    ZnsLog(kCyan, "Env::MaybeReleaseGCWriteZone(): Default implementation");
     return;
   }
 

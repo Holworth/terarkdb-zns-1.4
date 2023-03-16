@@ -104,6 +104,10 @@ struct CompactionParams {
   double score = -1;
   bool partial_compaction = false;
   CompactionType compaction_type = kKeyValueCompaction;
+  // This parameter only valid when the compaction_type fields is
+  // kGarbageCollection. The sub_compaction_type could be any of
+  // our ZNS GarbageCollection task type.
+  CompactionType sub_compaction_type = kKeyValueCompaction;
 
   // On ZNS, the placement_id is the partition id
   uint64_t placement_id;
@@ -296,6 +300,9 @@ class Compaction {
 
   // CompactionType
   CompactionType compaction_type() const { return compaction_type_; }
+  void set_compaction_type(CompactionType type) { compaction_type_ = type; }
+
+  CompactionType sub_compaction_type() const { return sub_compaction_type_; }
 
   uint64_t placement_id() const { return placement_id_; }
 
@@ -487,7 +494,8 @@ class Compaction {
   const bool partial_compaction_;
 
   //
-  const CompactionType compaction_type_;
+  CompactionType compaction_type_;
+  CompactionType sub_compaction_type_;
 
   //
   uint64_t placement_id_;

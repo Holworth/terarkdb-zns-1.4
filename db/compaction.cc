@@ -332,6 +332,7 @@ Compaction::Compaction(CompactionParams&& params)
       output_compression_opts_(params.compression_opts),
       partial_compaction_(params.partial_compaction),
       compaction_type_(params.compaction_type),
+      sub_compaction_type_(params.sub_compaction_type),
       placement_id_(params.placement_id),
       separation_type_(params.separation_type),
       input_range_(std::move(params.input_range)),

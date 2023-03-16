@@ -1356,11 +1356,12 @@ static uint32_t GetPathId(const ImmutableCFOptions& ioptions,
 }
 
 void DBImpl::ScheduleZNSGC() {
+  // std::cout << "[ScheduleZNSGC]: " << std::this_thread::get_id() << std::endl;
 #define ZNS_GC
 #ifdef ZNS_GC
-  uint64_t partition_id = -1;
-  auto [gc_files_in_fs, gc_type] = env_->GetGCHintsFromFS(&partition_id);
-  if (gc_files_in_fs.empty()) {
+  schedule_gc_count_ += 1;
+  auto [gc_files_in_fs, gc_type] = env_->GetGCHintsFromFS(nullptr);
+  if (gc_files_in_fs.empty() || gc_type.IsNoType()) {
     // ZenFS does not want a GC;
     return;
   }
@@ -1395,9 +1396,6 @@ void DBImpl::ScheduleZNSGC() {
 
     auto compaction_option = CompactionOptions();
 
-    if (gc_type == GenericHotness::NoType) {
-      compaction_option.placement_id = partition_id;
-    }
     compaction_option.hotness = gc_type;
     auto compaction = cfd->compaction_picker()->CompactFiles(
         compaction_option, inputs, -1, vstorage,

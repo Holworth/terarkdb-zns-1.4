@@ -9,6 +9,14 @@
 
 #include "db/column_family.h"
 
+#include <climits>
+
+#include "db/compaction.h"
+#include "db/version_edit.h"
+#include "rocksdb/memtablerep.h"
+#include "rocksdb/statistics.h"
+#include "util/stop_watch.h"
+
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
 #endif
@@ -1000,6 +1008,27 @@ Compaction* ColumnFamilyData::PickGarbageCollection(
                PICK_GARBAGE_COLLECTION_TIME);
   auto* result = compaction_picker_->PickGarbageCollection(
       GetName(), mutable_options, current_->storage_info(), log_buffer);
+  if (result != nullptr) {
+    result->SetInputVersion(current_);
+    result->set_compaction_load(0);
+  } else {
+    current_->storage_info()->SetPickGarbageCollectionFail();
+  }
+  return result;
+}
+
+Compaction* ColumnFamilyData::PickZNSGarbageCollection(
+    const MutableCFOptions& mutable_options, LogBuffer* log_buffer) {
+  // Pick up a proper zone from ZNS and all blob files located in this zone.
+  // Package them into a CompactionJob, then execute them.
+  // However, there are a few corner case to notice:
+  //  * What if a designated file is marked as gc_forbid?
+
+  StopWatch sw(ioptions_.env, ioptions_.statistics,
+               ZNS_PICK_GARBAGE_COLLECTION_TIME);
+  auto* result = compaction_picker_->PickZNSGarbageCollection(
+      GetName(), mutable_options, current_->storage_info(), log_buffer,
+      ioptions_.env);
   if (result != nullptr) {
     result->SetInputVersion(current_);
     result->set_compaction_load(0);

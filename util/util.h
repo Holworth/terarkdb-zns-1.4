@@ -31,4 +31,13 @@ template <class T, class... Args>
 void call_constructor(T* ptr, Args&&... args) {
   ::new (ptr) T(std::forward<Args>(args)...);
 }
+
+// A simple wrapper macro for checking the status of function execution
+// The input func must return a Status struct
+#define RUN_CHECK_OK(func)  \
+auto s = func;              \
+if (!s.ok()) {              \
+  return s;                 \
+}                           \
+
 }  // namespace TERARKDB_NAMESPACE
