@@ -333,6 +333,8 @@ Compaction::Compaction(CompactionParams&& params)
       partial_compaction_(params.partial_compaction),
       compaction_type_(params.compaction_type),
       sub_compaction_type_(params.sub_compaction_type),
+      gc_input_zones_(std::move(params.gc_input_zones)),
+      hotness_type_(params.hotness_type),
       placement_id_(params.placement_id),
       separation_type_(params.separation_type),
       input_range_(std::move(params.input_range)),

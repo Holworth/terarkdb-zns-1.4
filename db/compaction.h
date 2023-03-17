@@ -104,13 +104,30 @@ struct CompactionParams {
   double score = -1;
   bool partial_compaction = false;
   CompactionType compaction_type = kKeyValueCompaction;
+
+  // (ZNS): Compaction parameters related to ZNS garbage collection
+  // 
   // This parameter only valid when the compaction_type fields is
   // kGarbageCollection. The sub_compaction_type could be any of
   // our ZNS GarbageCollection task type.
   CompactionType sub_compaction_type = kKeyValueCompaction;
 
+  // We need to contain the zones used for gc so that the DB can 
+  // notify ZenFS to release these zones. Note that these zones 
+  // can not be released immediately after GC is done as some readers
+  // may be have reference to these files
+  // 
+  // We do not use explicit type "zone_id_t" because this would
+  // require including fs/fs_zenfs.h, which triggers circular reference
+  // of header files
+  std::vector<uint64_t> gc_input_zones;
+
+  // The type of this compaction work
+  HotnessType hotness_type;
+
   // On ZNS, the placement_id is the partition id
   uint64_t placement_id;
+
   SeparationType separation_type = kCompactionAutoRebuildBlob;
   std::vector<SelectedRange> input_range = {};
   CompactionReason compaction_reason = CompactionReason::kUnknown;
@@ -304,7 +321,12 @@ class Compaction {
 
   CompactionType sub_compaction_type() const { return sub_compaction_type_; }
 
+  // gc input zones
+  const std::vector<uint64_t>& gc_input_zones() const { return gc_input_zones_; }
+
   uint64_t placement_id() const { return placement_id_; }
+
+  HotnessType hotness_type() const { return hotness_type_; }
 
   // SeparationType
   SeparationType separation_type() const { return separation_type_; }
@@ -495,7 +517,13 @@ class Compaction {
 
   //
   CompactionType compaction_type_;
+
+  // ZNS:
   CompactionType sub_compaction_type_;
+
+  std::vector<uint64_t> gc_input_zones_;
+
+  HotnessType hotness_type_;
 
   //
   uint64_t placement_id_;

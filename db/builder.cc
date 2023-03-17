@@ -543,7 +543,8 @@ struct PartitionTableBuilderSeparateHelper : public SeparateHelper {
   std::vector<TableProperties>* prop = nullptr;
   std::unique_ptr<ValueExtractor> value_meta_extractor;
 
-  // TODO!!!: Add hotness set query structure here:
+  // Oracle for hotness detection
+  std::shared_ptr<Oracle> oracle;
 
   // Configurable parameters controlling the SeparateHelper
   //
@@ -560,6 +561,7 @@ struct PartitionTableBuilderSeparateHelper : public SeparateHelper {
   KeyType CalculateKeyType(const Slice& key) {
     // TODO: Query the hotness set to determine its hotness
     if (enable_hot_separation) {
+      auto t = oracle->ProbeKeyType(std::string(key.data(), key.size()), 0);
     }
 
     // Dealing with hash partition case
@@ -630,7 +632,6 @@ Status BuildPartitionTable(
     std::vector<TableProperties>* table_properties_vec, int level,
     double compaction_load, const uint64_t creation_time,
     const uint64_t oldest_key_time, Env::WriteLifeTimeHint write_hint) {
-
   // std::cout << "[BuildPartitionTable]: " << std::this_thread::get_id()
   //           << std::endl;
 
@@ -774,7 +775,7 @@ Status BuildPartitionTable(
         writer = &psh.hot_writer;
       } else if (key_type.IsWarm()) {
         writer = &psh.warm_writer;
-      } else if (key_type.IsParition()) {
+      } else if (key_type.IsPartition()) {
         writer = &psh.partition_writer[key_type.PartitionId()];
       } else {
         // Can not be a Cold type or unknown type in flush job
@@ -876,6 +877,7 @@ Status BuildPartitionTable(
 
     psh.output_meta = meta_vec;
     psh.prop = table_properties_vec;
+    psh.oracle = env->GetOracle();
 
     // Set some related parameters for this SeparateHelper
     psh.partition_num = env_options.partition_num;
@@ -897,51 +899,52 @@ Status BuildPartitionTable(
         true /* internal key corruption is not ok */, range_del_agg.get(),
         nullptr, blob_config);
 
-    struct SecondPassIterStorage {
-      std::unique_ptr<CompactionRangeDelAggregator> range_del_agg;
-      ScopedArenaIterator iter;
-      std::aligned_storage<sizeof(MergeHelper), alignof(MergeHelper)>::type
-          merge;
+    // struct SecondPassIterStorage {
+    //   std::unique_ptr<CompactionRangeDelAggregator> range_del_agg;
+    //   ScopedArenaIterator iter;
+    //   std::aligned_storage<sizeof(MergeHelper), alignof(MergeHelper)>::type
+    //       merge;
 
-      ~SecondPassIterStorage() {
-        if (iter.get() != nullptr) {
-          range_del_agg.reset();
-          iter.set(nullptr);
-          auto merge_ptr = reinterpret_cast<MergeHelper*>(&merge);
-          merge_ptr->~MergeHelper();
-        }
-      }
-    } second_pass_iter_storage;
+    //   ~SecondPassIterStorage() {
+    //     if (iter.get() != nullptr) {
+    //       range_del_agg.reset();
+    //       iter.set(nullptr);
+    //       auto merge_ptr = reinterpret_cast<MergeHelper*>(&merge);
+    //       merge_ptr->~MergeHelper();
+    //     }
+    //   }
+    // } second_pass_iter_storage;
 
-    auto make_compaction_iterator = [&] {
-      second_pass_iter_storage.range_del_agg.reset(
-          new CompactionRangeDelAggregator(&internal_comparator, snapshots));
-      for (auto& range_del_iter :
-           get_range_del_iters_callback(get_range_del_iters_arg)) {
-        second_pass_iter_storage.range_del_agg->AddTombstones(
-            std::move(range_del_iter));
-      }
-      second_pass_iter_storage.iter = ScopedArenaIterator(
-          get_input_iter_callback(get_input_iter_arg, arena));
-      auto merge_ptr = new (&second_pass_iter_storage.merge) MergeHelper(
-          env, internal_comparator.user_comparator(), ioptions.merge_operator,
-          nullptr, ioptions.info_log,
-          true /* internal key corruption is not ok */,
-          snapshots.empty() ? 0 : snapshots.back(), snapshot_checker);
-      return new CompactionIterator(
-          second_pass_iter_storage.iter.get(), &psh, nullptr,
-          internal_comparator.user_comparator(), merge_ptr, kMaxSequenceNumber,
-          &snapshots, earliest_write_conflict_snapshot, snapshot_checker, env,
-          false /* report_detailed_time */,
-          true /* internal key corruption is not ok */, range_del_agg.get());
-    };
-    std::unique_ptr<InternalIterator> second_pass_iter(NewCompactionIterator(
-        c_style_callback(make_compaction_iterator), &make_compaction_iterator));
+    // auto make_compaction_iterator = [&] {
+    //   second_pass_iter_storage.range_del_agg.reset(
+    //       new CompactionRangeDelAggregator(&internal_comparator, snapshots));
+    //   for (auto& range_del_iter :
+    //        get_range_del_iters_callback(get_range_del_iters_arg)) {
+    //     second_pass_iter_storage.range_del_agg->AddTombstones(
+    //         std::move(range_del_iter));
+    //   }
+    //   second_pass_iter_storage.iter = ScopedArenaIterator(
+    //       get_input_iter_callback(get_input_iter_arg, arena));
+    //   auto merge_ptr = new (&second_pass_iter_storage.merge) MergeHelper(
+    //       env, internal_comparator.user_comparator(),
+    //       ioptions.merge_operator, nullptr, ioptions.info_log, true /*
+    //       internal key corruption is not ok */, snapshots.empty() ? 0 :
+    //       snapshots.back(), snapshot_checker);
+    //   return new CompactionIterator(
+    //       second_pass_iter_storage.iter.get(), &psh, nullptr,
+    //       internal_comparator.user_comparator(), merge_ptr,
+    //       kMaxSequenceNumber, &snapshots, earliest_write_conflict_snapshot,
+    //       snapshot_checker, env, false /* report_detailed_time */, true /*
+    //       internal key corruption is not ok */, range_del_agg.get());
+    // };
+    // std::unique_ptr<InternalIterator> second_pass_iter(NewCompactionIterator(
+    //     c_style_callback(make_compaction_iterator),
+    //     &make_compaction_iterator));
 
-    if (ioptions.merge_operator == nullptr ||
-        ioptions.merge_operator->IsStableMerge()) {
-      builder->SetSecondPassIterator(second_pass_iter.get());
-    }
+    // if (ioptions.merge_operator == nullptr ||
+    //     ioptions.merge_operator->IsStableMerge()) {
+    //   builder->SetSecondPassIterator(second_pass_iter.get());
+    // }
 
     c_iter.SeekToFirst();
     for (; s.ok() && c_iter.Valid(); c_iter.Next()) {

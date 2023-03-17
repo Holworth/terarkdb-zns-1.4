@@ -2391,11 +2391,17 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
 
   input.reset();
   sub_compact->status = status;
+  sub_compact->blob_outputs = sub_compact->partition_blob_outputs;
+  {
+    StopWatch sw(env_, stats_, ZNS_ORACLE_MERGEKEYS);
+    env_->GetOracle()->MergeKeys(occurrence_map);
+  }
   // Report the stats
   stats_->measureTime(ZNS_PARTITION_GC_GET_KEY, time_counter.get_key);
   stats_->measureTime(ZNS_PARTITION_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
                       time_counter.merging_iterator_next);
-  stats_->measureTime(ZNS_PARTITION_GC_WRITE_TOTAL_MICROS, time_counter.gc_write);
+  stats_->measureTime(ZNS_PARTITION_GC_WRITE_TOTAL_MICROS,
+                      time_counter.gc_write);
 }
 
 Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
@@ -2881,7 +2887,7 @@ Status CompactionJob::ProcessZNSPartitionGarbageCollection(
         blob_builder = sub_compact->warm_builder.get();
         current_blob_output = sub_compact->current_warm_blob_output();
         counter.sep_warm_key_count += 1;
-      } else if (placement_type.IsParition() || placement_type.IsCold()) {
+      } else if (placement_type.IsPartition() || placement_type.IsCold()) {
         blob_builder = sub_compact->partition_builder.get();
         current_blob_output = sub_compact->current_partition_blob_output();
       } else {
@@ -2914,7 +2920,7 @@ Status CompactionJob::ProcessZNSPartitionGarbageCollection(
       if (!status.ok()) {
         return status;
       }
-      if (!placement_type.IsParition()) {
+      if (!placement_type.IsPartition()) {
         status = OpenCompactionOutputBlob(sub_compact, placement_type);
       } else {
         status = OpenCompactionOutputBlob(
@@ -3825,7 +3831,7 @@ Status CompactionJob::FinishSpecialCompactionOutputBlob(
     blob_builder = sub_compact->warm_builder.get();
     blob_outfile = sub_compact->warm_outfile.get();
     current_blob_output = sub_compact->current_warm_blob_output();
-  } else if (type.IsParition() || type.IsCold()) {
+  } else if (type.IsPartition() || type.IsCold()) {
     blob_builder = sub_compact->partition_builder.get();
     blob_outfile = sub_compact->partition_outfile.get();
     current_blob_output = sub_compact->current_partition_blob_output();
@@ -3890,7 +3896,7 @@ Status CompactionJob::FinishSpecialCompactionOutputBlob(
     sub_compact->hot_outfile.reset();
   } else if (type.IsWarm()) {
     sub_compact->warm_outfile.reset();
-  } else if (type.IsParition() || type.IsCold()) {
+  } else if (type.IsPartition() || type.IsCold()) {
     sub_compact->partition_outfile.reset();
   } else {
     assert(false);
@@ -3954,7 +3960,7 @@ Status CompactionJob::FinishSpecialCompactionOutputBlob(
     sub_compact->hot_builder.reset();
   } else if (type.IsWarm()) {
     sub_compact->warm_builder.reset();
-  } else if (type.IsParition() || type.IsCold()) {
+  } else if (type.IsPartition() || type.IsCold()) {
     sub_compact->partition_builder.reset();
   } else {
     assert(false);
@@ -4336,17 +4342,18 @@ Status CompactionJob::OpenCompactionOutputBlob(SubcompactionState* sub_compact,
 
   // Open and set writable_file and file writer accordingly
   // Partition and Cold use the same builder and outfile
-  auto& open_file = type.IsHot()        ? sub_compact->hot_outfile
-                    : type.IsWarm()     ? sub_compact->warm_outfile
-                    : type.IsParition() ? sub_compact->partition_outfile
-                    : type.IsCold()     ? sub_compact->partition_outfile
-                                        : sub_compact->blob_outfile;
+  auto& open_file = type.IsHot()         ? sub_compact->hot_outfile
+                    : type.IsWarm()      ? sub_compact->warm_outfile
+                    : type.IsPartition() ? sub_compact->partition_outfile
+                    : type.IsCold()      ? sub_compact->partition_outfile
+                                         : sub_compact->blob_outfile;
 
-  auto& open_blob_builder = type.IsHot()        ? sub_compact->hot_builder
-                            : type.IsWarm()     ? sub_compact->warm_builder
-                            : type.IsParition() ? sub_compact->partition_builder
-                            : type.IsCold()     ? sub_compact->partition_builder
-                                                : sub_compact->blob_builder;
+  auto& open_blob_builder = type.IsHot()    ? sub_compact->hot_builder
+                            : type.IsWarm() ? sub_compact->warm_builder
+                            : type.IsPartition()
+                                ? sub_compact->partition_builder
+                            : type.IsCold() ? sub_compact->partition_builder
+                                            : sub_compact->blob_builder;
 
   return OpenCompactinOutputBlobHelper(sub_compact, open_file,
                                        open_blob_builder, type, false);
@@ -4410,7 +4417,7 @@ Status CompactionJob::OpenCompactinOutputBlobHelper(
       sub_compact->hot_blob_outputs.push_back(out);
     } else if (type.IsWarm()) {
       sub_compact->warm_blob_outputs.push_back(out);
-    } else if (type.IsParition() || type.IsCold()) {
+    } else if (type.IsPartition() || type.IsCold()) {
       sub_compact->partition_blob_outputs.push_back(out);
     } else {
       assert(false);

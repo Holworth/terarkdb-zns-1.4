@@ -50,6 +50,7 @@ class Slice;
 struct ImmutableDBOptions;
 struct MutableDBOptions;
 class RateLimiter;
+class Compaction;
 
 using AccessPattern = RandomAccessFile::AccessPattern;
 using FileAttributes = Env::FileAttributes;
@@ -236,6 +237,14 @@ class FileSystem {
   // information from the FS to the DB.
   virtual std::pair<std::unordered_set<uint64_t>, HotnessType>
   GetGCHintsFromFS(void *out_args) = 0;
+
+  virtual std::shared_ptr<Env::FSGCHints> GetFSGCHints() {
+    return nullptr;
+  }
+
+  virtual void NotifyGarbageCollectionFinish(const Compaction* c) {
+    return;
+  }
 
   // Handles the event when a new DB or a new ColumnFamily starts using the
   // specified data paths.

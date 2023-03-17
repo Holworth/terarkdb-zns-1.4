@@ -69,6 +69,7 @@ class RateLimiter;
 class ThreadStatusUpdater;
 struct ThreadStatus;
 class FileSystem;
+class Compaction;
 
 const size_t kDefaultPageSize = 4 * 1024;
 
@@ -105,7 +106,7 @@ enum GenericHotness : uint64_t {
 // Instead, we choose to implement this type in a similar way of the Status
 // class.
 struct KeyType {
-  KeyType() : code(GenericHotness::NoType) {};
+  KeyType() : code(GenericHotness::NoType){};
   KeyType(uint64_t _code) : code(_code) {}
   KeyType(const KeyType&) = default;
   KeyType& operator=(const KeyType&) = default;
@@ -121,9 +122,10 @@ struct KeyType {
   bool IsHot() const { return code == GenericHotness::Hot; }
   bool IsWarm() const { return code == GenericHotness::Warm; }
   bool IsCold() const { return code == GenericHotness::Cold; }
-  bool IsParition() const { return code >> 31 == 4ULL; }
+  bool IsPartition() const { return code >> 31 == 4ULL; }
   bool IsNoType() const { return code == GenericHotness::NoType; }
   uint32_t PartitionId() const { return (uint32_t)code; }
+  bool Valid() const { return code != GenericHotness::NoType; }
 
   // For Debug
   std::string ToString() const {
@@ -134,7 +136,7 @@ struct KeyType {
       ss << "Warm";
     else if (IsCold())
       ss << "Cold";
-    else if (IsParition())
+    else if (IsPartition())
       ss << "Partition: " << PartitionId();
     else
       ss << "Unknown";
@@ -217,8 +219,8 @@ class Oracle {
   virtual ~Oracle(){};
 
   virtual void MergeKeys(std::unordered_map<std::string, uint64_t>& update) = 0;
-  virtual KeyType ProbeKeyType(std::string& key, uint64_t occrrence) = 0;
-  virtual void AddKey(std::string& key, uint64_t occurrence) = 0;
+  virtual KeyType ProbeKeyType(const std::string& key, uint64_t occrrence) = 0;
+  virtual void AddKey(const std::string& key, uint64_t occurrence) = 0;
   virtual void UpdateStats() = 0;
 };
 
@@ -264,10 +266,42 @@ class Env {
     return;
   };
 
-  virtual std::pair<std::unordered_set<uint64_t>, HotnessType>
-  GetGCHintsFromFS(void* out_args) {
+  virtual std::pair<std::unordered_set<uint64_t>, HotnessType> GetGCHintsFromFS(
+      void* out_args) {
     ZnsLog(kCyan, "Env::GetGCHintsFromFS(): Default implementation\n");
     return {};
+  }
+
+  // The ZenFS provides its GC hints upward
+  struct GCInputZone {
+    GCInputZone() : zone_id(-1), file_numbers() {}
+
+    uint64_t zone_id;
+    std::vector<uint64_t> file_numbers;
+  };
+
+  // The Hints provided by FS
+  struct FSGCHints {
+    FSGCHints() : type(HotnessType::NoType()), input_zones() {}
+
+    HotnessType type;
+    std::vector<GCInputZone> input_zones;
+  };
+
+  virtual std::shared_ptr<FSGCHints> GetFSGCHints() {
+    ZnsLog(kCyan, "Env::GetFSGCHints(): Default implementation\n");
+    return nullptr;
+  }
+
+  // The DB layer notifies the Filesystem that one gabarge collection has
+  // been executed successfully. And the filesystem should do corresponding
+  // actions. Specifically, for ZenFS, the ZenFS would add all zones involved
+  // in this GC task into a pending queue and reset these zone when there is
+  // no valid data in this zone
+  virtual void NotifyGarbageCollectionFinish(const Compaction* c) {
+    ZnsLog(kCyan,
+           "Env::NofityGarbageCollectionFinish(): Default implementation\n");
+    return;
   }
 
   virtual void UpdateCompactionIterStats(

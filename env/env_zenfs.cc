@@ -1,8 +1,12 @@
+#include <chrono>
+#include <ratio>
+
 #include "db/compaction_iteration_stats.h"
 #include "fs/metrics.h"
 #include "fs/snapshot.h"
 #include "rocksdb/env.h"
 #include "rocksdb/file_system.h"
+#include "rocksdb/slice.h"
 #include "rocksdb/table_properties.h"
 #include "rocksdb/terark_namespace.h"
 
@@ -191,26 +195,52 @@ class ZenFSOracle : public Oracle {
 
   // fuck I have to sort the @update
   void MergeKeys(std::unordered_map<std::string, uint64_t>& update) override {
-    std::map<uint64_t, std::vector<std::string>> sorted;
-
+    std::map<uint64_t, std::vector<const std::string*>> sorted;
     for (const auto& i : update) {
-      sorted[i.second].push_back(i.first);
+      sorted[i.second].push_back(&i.first);
     }
-
+    // evict_rate_ * update.size() is a very huge number. We set a hard-limit
+    // 300 for the number of keys to process
+    auto check_key_cnt = std::min(update.size() * evict_rate_, 300.0);
     auto high_occurrence = sorted.rbegin();
-    for (int i = 0;
-         i < update.size() * evict_rate_ && high_occurrence != sorted.rend();) {
+    for (int i = 0; i < check_key_cnt && high_occurrence != sorted.rend();) {
       for (auto& k : high_occurrence->second) {
-        AddKey(k, high_occurrence->first);
+        AddKey(*k, high_occurrence->first);
         ++i;
       }
       ++high_occurrence;
     }
+
+    // std::vector<std::pair<Slice, uint64_t>> sorted;
+    // for (const auto& i : update) {
+    //   const auto& s = i.first;
+    //   sorted.push_back({Slice(s.data(), s.size()), i.second});
+    // }
+    // std::sort(sorted.begin(), sorted.end(), [](const auto& p1, const auto&
+    // p2) {
+    //   return p1.second > p2.second;
+    // });
+
+    // auto check_key_cnt = std::min(update.size() * evict_rate_, 300.0);
+    // uint64_t high_occur = 0;
+    // auto iter = sorted.begin();
+    // int add_cnt = 0;
+    // for (; iter != sorted.end() && add_cnt < check_key_cnt; ++iter) {
+    //   auto s = std::string(iter->first.data(), iter->first.size());
+    //   AddKey(s, iter->second);
+    //   high_occur = iter->second;
+    // }
+    // while (iter != sorted.end() && iter->second == high_occur) {
+    //   auto s = std::string(iter->first.data(), iter->first.size());
+    //   AddKey(s, iter->second);
+    //   ++iter;
+    // }
   }
 
-  KeyType ProbeKeyType(std::string& key, uint64_t occurrence) override {
-    if (key_set_.contains(key)) {
-      return key_set_.find(key)->hotness;
+  KeyType ProbeKeyType(const std::string& key, uint64_t occurrence) override {
+    std::shared_ptr<KeyHint> hint;
+    if (key_set_.find(key, hint)) {
+      return hint->hotness;
     }
 
     if (occurrence >= stats_.average_occurrence) {
@@ -228,7 +258,7 @@ class ZenFSOracle : public Oracle {
     }
   }
 
-  void AddKey(std::string& key, uint64_t occurrence) override {
+  void AddKey(const std::string& key, uint64_t occurrence) override {
     if (key_set_.size() >= limit_) {
       if (occurrence < stats_.min_occurrence) {
         return;
@@ -402,6 +432,14 @@ class ZenfsEnv : public EnvWrapper {
   std::pair<std::unordered_set<uint64_t>, HotnessType> GetGCHintsFromFS(
       void* out_args) override {
     return fs_->GetGCHintsFromFS(out_args);
+  }
+
+  std::shared_ptr<Env::FSGCHints> GetFSGCHints() override {
+    return fs_->GetFSGCHints();
+  }
+
+  void NotifyGarbageCollectionFinish(const Compaction* c) override {
+    return fs_->NotifyGarbageCollectionFinish(c);
   }
 
   std::shared_ptr<Oracle> GetOracle() override { return key_oracle_; }

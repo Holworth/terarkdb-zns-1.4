@@ -1870,26 +1870,26 @@ void DBImpl::MaybeScheduleFlushOrCompaction() {
              bg_job_limits.max_garbage_collections &&
          unscheduled_garbage_collections_ > 0) {
     // if (already_scheduled_zns_gc_ < schedule_zns_gc_limit_) {
-      CompactionArg* ca = new CompactionArg;
-      ca->db = this;
-      ca->prepicked_compaction = nullptr;
-      bg_compaction_scheduled_++;
-      bg_garbage_collection_scheduled_++;
-      unscheduled_garbage_collections_--;
-      // env_->Schedule(&DBImpl::BGWorkGarbageCollection, ca,
-      // Env::Priority::LOW,
-      //                this, &DBImpl::UnscheduleCallback);
-      std::cout
-          << "**************************** bg_compation_scheduled before "
-             "BGWorkZNSGarbageCollection is !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!: "
-          << bg_compaction_scheduled_ << "\n";
+    CompactionArg* ca = new CompactionArg;
+    ca->db = this;
+    ca->prepicked_compaction = nullptr;
+    bg_compaction_scheduled_++;
+    bg_garbage_collection_scheduled_++;
+    unscheduled_garbage_collections_--;
+    // env_->Schedule(&DBImpl::BGWorkGarbageCollection, ca,
+    // Env::Priority::LOW,
+    //                this, &DBImpl::UnscheduleCallback);
+    // std::cout
+    //     << "**************************** bg_compation_scheduled before "
+    //        "BGWorkZNSGarbageCollection is !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!: "
+    //     << bg_compaction_scheduled_ << "\n";
 
-      env_->Schedule(&DBImpl::BGWorkZNSGarbageCollection, ca,
-                     Env::Priority::LOW, this, &DBImpl::UnscheduleCallback);
-      std::cout
-          << "**************************** bg_compation_scheduled after "
-             "BGWorkZNSGarbageCollection is ===============================: "
-          << bg_compaction_scheduled_ << "\n";
+    env_->Schedule(&DBImpl::BGWorkZNSGarbageCollection, ca, Env::Priority::LOW,
+                   this, &DBImpl::UnscheduleCallback);
+    // std::cout
+    //     << "**************************** bg_compation_scheduled after "
+    //        "BGWorkZNSGarbageCollection is ===============================: "
+    //     << bg_compaction_scheduled_ << "\n";
     // }
   }
 
@@ -3384,6 +3384,10 @@ Status DBImpl::BackgroundZNSGarbageCollection(bool* made_progress,
     NotifyOnCompactionCompleted(c->column_family_data(), c.get(), status,
                                 garbage_collection_job_stats,
                                 job_context->job_id);
+
+    // Notify the file system that this round garbage collection work has 
+    // been finished successfully.
+    env_->NotifyGarbageCollectionFinish(c.get());
   }
 
   if (status.ok() || status.IsCompactionTooLarge()) {
