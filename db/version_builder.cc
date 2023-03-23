@@ -9,6 +9,8 @@
 
 #include "db/version_builder.h"
 
+#include "db/version_edit.h"
+
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
 #endif
@@ -151,6 +153,10 @@ struct VersionBuilderContextImpl : VersionBuilder::Context {
   uint64_t maintainer_job_limit;
   chash_map<uint64_t, DependenceItem> dependence_map;
   chash_map<uint64_t, InheritanceItem> inheritance_counter;
+  std::vector<FileMetaData*> new_blobs;
+  // Each element (fn, FileMetaData) means the file labeled with fn generates
+  // FileMetaData
+  std::vector<std::pair<uint64_t, FileMetaData*>> blob_dependence;
 };
 
 class VersionBuilder::Rep {
@@ -738,6 +744,144 @@ class VersionBuilder::Rep {
     vstorage->CalculateBlobInfo();
   }
 
+  void Apply(VersionEdit* edit, uint64_t version_num) {
+    Init();
+    CheckConsistency(base_vstorage_, false);
+    if (debugger_) {
+      debugger_->PushEdit(edit);
+    }
+
+    // Delete files
+    const VersionEdit::DeletedFileSet& del = edit->GetDeletedFiles();
+    context_->new_deleted_files += del.size();
+    for (auto& pair : del) {
+      int level = pair.first;
+      auto file_number = pair.second;
+      if (level < num_levels_) {
+        CheckConsistencyForDeletes(edit, file_number, level);
+        assert(context_->levels[level].count(file_number) > 0);
+        DelSst(file_number, level);
+      } else {
+        auto exising = invalid_levels_[level].find(file_number);
+        if (exising != invalid_levels_[level].end()) {
+          invalid_levels_[level].erase(exising);
+        } else {
+          // Deleting an non-existing file on invalid level.
+          has_invalid_levels_ = true;
+        }
+      }
+    }
+
+    // Add new files
+    for (auto& pair : edit->GetNewFiles()) {
+      int level = pair.first;
+      if (level < num_levels_) {
+        FileMetaData* f = new FileMetaData(pair.second);
+        assert(f->table_reader_handle == nullptr);
+        assert(level < 0 ||
+               context_->levels[level].count(f->fd.GetNumber()) == 0);
+        PutSst(f, level);
+        if (level == -1) {
+          // (ZNS): This is a new blob file, we need to deal with it specially
+          // for updating our file mapping. 
+          // Similar to the original processing flow, we first convert the edit
+          // data structure into the temporary data structure stored in the 
+          // context and do the actual update to the dependence tree when 
+          // SaveTo occurs
+          context_->new_blobs.emplace_back(f);
+          // Find all its predecessor files by traversing through the dependence
+          for (const auto& [f1, f2] : edit->GetBlobDependence()) {
+            if (f2.fd.GetNumber() == f->fd.GetNumber()) {
+              context_->blob_dependence.emplace_back(
+                  std::make_pair(f1.fd.GetNumber(), f));
+            }
+          }
+        }
+      } else {
+        uint64_t number = pair.second.fd.GetNumber();
+        if (invalid_levels_[level].count(number) == 0) {
+          invalid_levels_[level].insert(number);
+        } else {
+          // Creating an already existing file on invalid level.
+          has_invalid_levels_ = true;
+        }
+      }
+    }
+    assert(context_->new_blobs.size() == edit->GetNewBlobs().size());
+    assert(context_->blob_dependence.size() ==
+           edit->GetBlobDependence().size());
+
+    // shrink files
+    CalculateDependence(false, edit->is_open_db(), 0);
+  }
+
+  void SaveTo(VersionStorageInfo* vstorage, double maintainer_job_ratio,
+              uint64_t version_num) {
+    Init();
+    CheckConsistency(vstorage, true);
+    CalculateDependence(true, false, maintainer_job_ratio);
+    auto exists = [&](uint64_t file_number) {
+      auto find = context_->inheritance_counter.find(file_number);
+      assert(find != context_->inheritance_counter.end());
+      return bool(find->second.depended);
+    };
+
+    std::vector<double> read_amp(num_levels_);
+
+    for (int level = 0; level < num_levels_; level++) {
+      auto& cmp = (level == 0) ? level_zero_cmp_ : level_nonzero_cmp_;
+
+      auto& unordered_added_files = context_->levels[level];
+      vstorage->Reserve(level, unordered_added_files.size());
+
+      // Sort files for the level.
+      std::vector<FileMetaData*> ordered_added_files;
+      ordered_added_files.reserve(unordered_added_files.size());
+      for (const auto& pair : unordered_added_files) {
+        ordered_added_files.push_back(pair.second);
+      }
+      std::sort(ordered_added_files.begin(), ordered_added_files.end(), cmp);
+
+      for (auto f : ordered_added_files) {
+        vstorage->AddFile(level, f, c_style_callback(exists), &exists,
+                          info_log_);
+        if (level == 0) {
+          read_amp[level] += f->prop.read_amp;
+        } else {
+          read_amp[level] = std::max<double>(read_amp[level], f->prop.read_amp);
+        }
+      }
+    }
+    for (auto& pair : context_->dependence_map) {
+      auto& item = pair.second;
+      if (item.level == -1) {
+        vstorage->AddFile(-1, item.f, c_style_callback(exists), &exists,
+                          info_log_);
+      }
+      vstorage->UpdateAccumulatedStats(item.f);
+    }
+
+    // (ZNS): Update the multi inheritence tree
+    for (auto& f : context_->new_blobs) {
+      vstorage->dependence_multi_map()->AddNode(f, version_num);
+    }
+    for (auto& [fn, f] : context_->blob_dependence) {
+      vstorage->dependence_multi_map()->AddDerivedNode(fn, f, version_num);
+    }
+
+    vstorage->set_read_amplification(read_amp);
+    vstorage->oldest_snapshot_seqnum(base_vstorage_->oldest_snapshot_seqnum());
+
+    CheckConsistency(vstorage, true);
+    if (debugger_) {
+      debugger_->Verify(this, vstorage);
+    }
+    vstorage->ResetVersionBuilderContext(context_.release());
+    vstorage->ComputeBlobOverlapScore();
+    vstorage->CalculateEdge();
+    vstorage->CalculateBlobInfo();
+  }
+
   void LoadTableHandlers(InternalStats* internal_stats,
                          bool prefetch_index_and_filter_in_cache,
                          const SliceTransform* prefix_extractor,
@@ -882,6 +1026,15 @@ void VersionBuilder::Apply(VersionEdit* edit) { rep_->Apply(edit); }
 void VersionBuilder::SaveTo(VersionStorageInfo* vstorage,
                             double maintainer_job_ratio) {
   rep_->SaveTo(vstorage, maintainer_job_ratio);
+}
+
+void VersionBuilder::Apply(VersionEdit* edit, uint64_t version_num) {
+  rep_->Apply(edit, version_num);
+}
+
+void VersionBuilder::SaveTo(VersionStorageInfo* vstorage,
+                            double maintainer_job_ratio, uint64_t version_num) {
+  rep_->SaveTo(vstorage, maintainer_job_ratio, version_num);
 }
 
 void VersionBuilder::LoadTableHandlers(InternalStats* internal_stats,

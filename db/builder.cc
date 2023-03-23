@@ -33,6 +33,7 @@
 #include "rocksdb/iterator.h"
 #include "rocksdb/merge_operator.h"
 #include "rocksdb/options.h"
+#include "rocksdb/statistics.h"
 #include "rocksdb/table.h"
 #include "rocksdb/table_properties.h"
 #include "rocksdb/terark_namespace.h"
@@ -560,8 +561,14 @@ struct PartitionTableBuilderSeparateHelper : public SeparateHelper {
   // Get the type of a specific key
   KeyType CalculateKeyType(const Slice& key) {
     // TODO: Query the hotness set to determine its hotness
+    ParsedInternalKey ikey;
     if (enable_hot_separation) {
-      auto t = oracle->ProbeKeyType(std::string(key.data(), key.size()), 0);
+      ParseInternalKey(key, &ikey);
+      auto tmp = std::string(ikey.user_key.data(), ikey.user_key.size());
+      auto t = oracle->ProbeKeyType(tmp, 0);
+      if (t.IsHot() || t.IsWarm()) {
+        return t;
+      }
     }
 
     // Dealing with hash partition case
@@ -635,6 +642,8 @@ Status BuildPartitionTable(
   // std::cout << "[BuildPartitionTable]: " << std::this_thread::get_id()
   //           << std::endl;
 
+  StopWatch sw(env, ioptions.statistics, ZNS_BUILD_PARTITION_TABLE);
+
   assert((column_family_id ==
           TablePropertiesCollectorFactory::Context::kUnknownColumnFamily) ==
          column_family_name.empty());
@@ -645,6 +654,10 @@ Status BuildPartitionTable(
   if (table_properties_vec != nullptr) {
     table_properties_vec->emplace_back();
   }
+
+  // (ZNS): sst_meta is the first element of the meta_vec, what is this meta_vec
+  // for? it seems that the sst_meta is used to construct the key sst of this
+  // flush job, see how fname is constructed below
   auto sst_meta = [meta_vec] { return &meta_vec->front(); };
   Arena arena;
   ScopedArenaIterator iter(get_input_iter_callback(get_input_iter_arg, arena));
@@ -664,6 +677,13 @@ Status BuildPartitionTable(
       ioptions.listeners, dbname, column_family_name, fname, job_id, reason);
 #endif  // !ROCKSDB_LITE
   TableProperties tp;
+  struct {
+    // The time spent on probe key type
+    uint64_t probe_key_type_total_time = 0;
+    uint64_t sep_hot_count = 0;
+    uint64_t sep_warm_count = 0;
+    uint64_t total_output_count = 0;
+  } counter;
 
   if (iter->Valid() || !range_del_agg->IsEmpty()) {
     // Create the table builder for KeySST
@@ -769,12 +789,20 @@ Status BuildPartitionTable(
       assert(value.file_number() == uint64_t(-1));
       Status status;
       PartitionTableBuilderSeparateHelper::Writer* writer = nullptr;
+
+      auto start = env->NowMicros();
       auto key_type = psh.CalculateKeyType(key);
+      counter.probe_key_type_total_time += (env->NowMicros() - start);
+
+      counter.total_output_count++;
+
       // Pick a writer
       if (key_type.IsHot()) {
         writer = &psh.hot_writer;
+        counter.sep_hot_count++;
       } else if (key_type.IsWarm()) {
         writer = &psh.warm_writer;
+        counter.sep_warm_count++;
       } else if (key_type.IsPartition()) {
         writer = &psh.partition_writer[key_type.PartitionId()];
       } else {
@@ -899,53 +927,6 @@ Status BuildPartitionTable(
         true /* internal key corruption is not ok */, range_del_agg.get(),
         nullptr, blob_config);
 
-    // struct SecondPassIterStorage {
-    //   std::unique_ptr<CompactionRangeDelAggregator> range_del_agg;
-    //   ScopedArenaIterator iter;
-    //   std::aligned_storage<sizeof(MergeHelper), alignof(MergeHelper)>::type
-    //       merge;
-
-    //   ~SecondPassIterStorage() {
-    //     if (iter.get() != nullptr) {
-    //       range_del_agg.reset();
-    //       iter.set(nullptr);
-    //       auto merge_ptr = reinterpret_cast<MergeHelper*>(&merge);
-    //       merge_ptr->~MergeHelper();
-    //     }
-    //   }
-    // } second_pass_iter_storage;
-
-    // auto make_compaction_iterator = [&] {
-    //   second_pass_iter_storage.range_del_agg.reset(
-    //       new CompactionRangeDelAggregator(&internal_comparator, snapshots));
-    //   for (auto& range_del_iter :
-    //        get_range_del_iters_callback(get_range_del_iters_arg)) {
-    //     second_pass_iter_storage.range_del_agg->AddTombstones(
-    //         std::move(range_del_iter));
-    //   }
-    //   second_pass_iter_storage.iter = ScopedArenaIterator(
-    //       get_input_iter_callback(get_input_iter_arg, arena));
-    //   auto merge_ptr = new (&second_pass_iter_storage.merge) MergeHelper(
-    //       env, internal_comparator.user_comparator(),
-    //       ioptions.merge_operator, nullptr, ioptions.info_log, true /*
-    //       internal key corruption is not ok */, snapshots.empty() ? 0 :
-    //       snapshots.back(), snapshot_checker);
-    //   return new CompactionIterator(
-    //       second_pass_iter_storage.iter.get(), &psh, nullptr,
-    //       internal_comparator.user_comparator(), merge_ptr,
-    //       kMaxSequenceNumber, &snapshots, earliest_write_conflict_snapshot,
-    //       snapshot_checker, env, false /* report_detailed_time */, true /*
-    //       internal key corruption is not ok */, range_del_agg.get());
-    // };
-    // std::unique_ptr<InternalIterator> second_pass_iter(NewCompactionIterator(
-    //     c_style_callback(make_compaction_iterator),
-    //     &make_compaction_iterator));
-
-    // if (ioptions.merge_operator == nullptr ||
-    //     ioptions.merge_operator->IsStableMerge()) {
-    //   builder->SetSecondPassIterator(second_pass_iter.get());
-    // }
-
     c_iter.SeekToFirst();
     for (; s.ok() && c_iter.Valid(); c_iter.Next()) {
       s = builder->Add(c_iter.key(), c_iter.value());
@@ -989,7 +970,7 @@ Status BuildPartitionTable(
       }
     }
 
-    // TODO: The inheritance map may need a re-implementation
+    // (ZNS): TODO: The inheritance map may need a re-implementation
     if (!s.ok() || empty) {
       builder->Abandon();
     } else {
@@ -1075,6 +1056,16 @@ Status BuildPartitionTable(
   if (!s.ok() || sst_meta()->fd.GetFileSize() == 0) {
     env->DeleteFile(fname);
   }
+
+  ioptions.statistics->measureTime(ZNS_BUILD_PARTITION_TABLE_PROBE,
+                                   counter.probe_key_type_total_time);
+  ZnsLog(
+      kCyan,
+      "[BuildPartitionTable][Output: %lu][Hot: %lu (%.2lf)][Warm: %lu (%.2lf)]",
+      counter.total_output_count, counter.sep_hot_count,
+      (double)counter.sep_hot_count / counter.total_output_count,
+      counter.sep_warm_count,
+      (double)counter.sep_warm_count / counter.total_output_count);
 
   // Output to event logger and fire events.
   EventHelpers::LogAndNotifyTableFileCreationFinished(

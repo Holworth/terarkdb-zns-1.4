@@ -34,6 +34,7 @@
 #include "db/compaction_picker.h"
 #include "db/dbformat.h"
 #include "db/file_indexer.h"
+#include "db/filemap.h"
 #include "db/log_reader.h"
 #include "db/range_del_aggregator.h"
 #include "db/read_callback.h"
@@ -342,6 +343,10 @@ class VersionStorageInfo {
   // REQUIRES: This version has been saved (see VersionSet::SaveTo)
   const DependenceMap& dependence_map() const { return dependence_map_; }
 
+  const std::shared_ptr<FileMap>& dependence_multi_map() const {
+    return dependence_multi_map_;
+  }
+
   const TERARKDB_NAMESPACE::LevelFilesBrief& LevelFilesBrief(int level) const {
     assert(level < static_cast<int>(level_files_brief_.size()));
     return level_files_brief_[level];
@@ -543,6 +548,9 @@ class VersionStorageInfo {
 
   // Dependence files both in files[-1] and dependence_map
   DependenceMap dependence_map_;
+
+  // On ZNS, we use the following inheritence tree instead the one abve
+  std::shared_ptr<FileMap> dependence_multi_map_;
 
   // Level that L0 data should be compacted to. All levels < base_level_ should
   // be empty. -1 if it is not level-compaction so it's not applicable.

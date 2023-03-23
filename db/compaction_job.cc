@@ -2189,7 +2189,10 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   }
 
   Version* input_version = sub_compact->compaction->input_version();
-  auto& dependence_map = input_version->storage_info()->dependence_map();
+  // auto& dependence_map = input_version->storage_info()->dependence_map();
+  const auto& dependence_multi_map =
+      input_version->storage_info()->dependence_multi_map();
+  auto version_number = input_version->GetVersionNumber();
   auto& comp = cfd->internal_comparator();
   std::string last_key;
   IterKey iter_key;
@@ -2237,13 +2240,21 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     if (find_cache != blob_meta_cache.end()) {
       blob_meta = find_cache->second;
     } else {
-      auto find_dependence_map = dependence_map.find(blob_file_number);
-      if (find_dependence_map == dependence_map.end()) {
+      // auto find_dependence_map = dependence_map.find(blob_file_number);
+      auto fm_status = dependence_multi_map->QueryFileMeta(
+          blob_file_number, ikey.user_key, &comp, version_number, &blob_meta);
+      // if (find_dependence_map == dependence_map.end()) {
+      //   status =
+      //       Status::Corruption("ProcessGarbageCollection internal error !");
+      //   break;
+      // }
+
+      if (!fm_status.ok()) {
         status =
             Status::Corruption("ProcessGarbageCollection internal error !");
         break;
       }
-      blob_meta = find_dependence_map->second;
+      // blob_meta = find_dependence_map->second;
       blob_meta_cache.emplace_back(blob_file_number, blob_meta);
       assert(blob_meta->fd.GetNumber() == blob_file_number);
     }
@@ -2279,13 +2290,17 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
         break;
       }
       uint64_t file_number = SeparateHelper::DecodeFileNumber(value.slice());
-      auto find = dependence_map.find(file_number);
-      if (find == dependence_map.end()) {
+      // auto find = dependence_map.find(file_number);
+      FileMetaData* find = nullptr;
+      auto fm_status = dependence_multi_map->QueryFileMeta(
+          file_number, ikey.user_key, &comp, version_number, &find);
+      // if (find == dependence_map.end()) {
+      if (!fm_status.ok()) {
         status = Status::Corruption("Separate value dependence missing");
         break;
       }
       value = input->value();
-      if (find->second->fd.GetNumber() != value.file_number()) {
+      if (find->fd.GetNumber() != value.file_number()) {
         ++counter.file_number_mismatch;
         break;
       }
@@ -2322,6 +2337,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   }
   std::vector<uint64_t> inheritance_tree;
   size_t inheritance_tree_pruge_count = 0;
+  auto& dependence_map = input_version->storage_info()->dependence_map();
   if (status.ok()) {
     status = BuildInheritanceTree(
         *sub_compact->compaction->inputs(), dependence_map, input_version,
@@ -2438,6 +2454,9 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
 
   Version* input_version = sub_compact->compaction->input_version();
   auto& dependence_map = input_version->storage_info()->dependence_map();
+  auto& dependence_multi_map =
+      input_version->storage_info()->dependence_multi_map();
+  auto version_number = input_version->GetVersionNumber();
   auto& comp = cfd->internal_comparator();
   std::string last_key;
   uint64_t last_file_number = uint64_t(-1);
@@ -2500,13 +2519,22 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
     if (find_cache != blob_meta_cache.end()) {
       blob_meta = find_cache->second;
     } else {
-      auto find_dependence_map = dependence_map.find(blob_file_number);
-      if (find_dependence_map == dependence_map.end()) {
+      // auto find_dependence_map = dependence_map.find(blob_file_number);
+      auto fm_status = dependence_multi_map->QueryFileMeta(
+          blob_file_number, ikey.user_key, &comp, version_number, &blob_meta);
+      // if (find_dependence_map == dependence_map.end()) {
+      //   status =
+      //       Status::Corruption("ProcessGarbageCollection internal error !");
+      //   break;
+      // }
+
+      if (!fm_status.ok()) {
         status =
             Status::Corruption("ProcessGarbageCollection internal error !");
         break;
       }
-      blob_meta = find_dependence_map->second;
+
+      // blob_meta = find_dependence_map->second;
       blob_meta_cache.emplace_back(blob_file_number, blob_meta);
       assert(blob_meta->fd.GetNumber() == blob_file_number);
     }
@@ -2538,13 +2566,21 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
         break;
       }
       uint64_t file_number = SeparateHelper::DecodeFileNumber(value.slice());
-      auto find = dependence_map.find(file_number);
-      if (find == dependence_map.end()) {
+      FileMetaData* find = nullptr;
+      auto fm_status = dependence_multi_map->QueryFileMeta(
+          file_number, ikey.user_key, &comp, version_number, &find);
+      // auto find = dependence_map.find(file_number);
+      // if (find == dependence_map.end()) {
+      //   status = Status::Corruption("Separate value dependence missing");
+      //   break;
+      // }
+      if (!fm_status.ok()) {
         status = Status::Corruption("Separate value dependence missing");
         break;
       }
       value = input->value();
-      if (find->second->fd.GetNumber() != value.file_number()) {
+      // if (find->second->fd.GetNumber() != value.file_number()) {
+      if (find->fd.GetNumber() != value.file_number()) {        
         ++counter.file_number_mismatch;
         break;
       }
@@ -2684,6 +2720,8 @@ Status CompactionJob::ProcessZNSPartitionGarbageCollection(
 
   Version* input_version = sub_compact->compaction->input_version();
   auto& dependence_map = input_version->storage_info()->dependence_map();
+  auto& dependence_multi_map =
+      input_version->storage_info()->dependence_multi_map();
   auto& comp = cfd->internal_comparator();
   std::string last_key;
   uint64_t last_file_number = uint64_t(-1);

@@ -9,6 +9,8 @@
 
 #include "db/version_set.h"
 
+#include "db/version_edit.h"
+
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
 #endif
@@ -753,6 +755,15 @@ class BaseReferencedVersionBuilder {
     version_builder_->SaveTo(vstorage, maintainer_job_ratio);
   }
 
+  // version_num is the new version that generates this change
+  void DoApplyAndSaveTo(VersionStorageInfo* vstorage,
+                        double maintainer_job_ratio, uint64_t version_num) {
+    for (auto edit : edit_list_) {
+      version_builder_->Apply(edit, version_num);
+    }
+    version_builder_->SaveTo(vstorage, maintainer_job_ratio, version_num);
+  }
+
  private:
   VersionBuilder* version_builder_;
   Version* version_;
@@ -1249,6 +1260,7 @@ VersionStorageInfo::VersionStorageInfo(
       force_consistency_checks_(_force_consistency_checks),
       blob_marked_for_compaction_(false) {
   ++files_;  // level -1 used for dependence files
+  dependence_multi_map_ = std::make_shared<FileMap>();
 }
 
 Version::Version(ColumnFamilyData* column_family_data, VersionSet* vset,
@@ -1283,12 +1295,15 @@ Status Version::fetch_buffer(LazyBuffer* buffer) const {
   Slice user_key(reinterpret_cast<const char*>(context->data[0]),
                  context->data[1]);
   uint64_t sequence = context->data[2];
-  auto pair = *reinterpret_cast<DependenceMap::value_type*>(context->data[3]);
-  if (pair.second->fd.GetNumber() != pair.first) {
-    RecordTick(db_statistics_, READ_BLOB_INVALID);
-  } else {
-    RecordTick(db_statistics_, READ_BLOB_VALID);
-  }
+  // auto pair =
+  // *reinterpret_cast<DependenceMap::value_type*>(context->data[3]);
+  auto* meta = reinterpret_cast<FileMetaData*>(context->data[3]);
+  // skip the following stats
+  // if (pair.second->fd.GetNumber() != pair.first) {
+  //   RecordTick(db_statistics_, READ_BLOB_INVALID);
+  // } else {
+  //   RecordTick(db_statistics_, READ_BLOB_VALID);
+  // }
   bool value_found = false;
   SequenceNumber context_seq;
   GetContext get_context(cfd_->internal_comparator().user_comparator(), nullptr,
@@ -1298,7 +1313,7 @@ Status Version::fetch_buffer(LazyBuffer* buffer) const {
   IterKey iter_key;
   iter_key.SetInternalKey(user_key, sequence, kValueTypeForSeek);
   auto s = table_cache_->Get(
-      ReadOptions(), *pair.second, storage_info_.dependence_map(),
+      ReadOptions(), *meta, storage_info_.dependence_map(),
       iter_key.GetInternalKey(), &get_context,
       mutable_cf_options_.prefix_extractor.get(), nullptr, true);
   if (!s.ok()) {
@@ -1309,14 +1324,14 @@ Status Version::fetch_buffer(LazyBuffer* buffer) const {
     if (get_context.State() == GetContext::kCorrupt) {
       return std::move(get_context).CorruptReason();
     } else {
-      char buf[128];
-      snprintf(buf, sizeof buf,
-               "file number = %" PRIu64 "(%" PRIu64 "), sequence = %" PRIu64,
-               pair.second->fd.GetNumber(), pair.first, sequence);
-      return Status::Corruption("Separate value missing", buf);
+      // char buf[128];
+      // snprintf(buf, sizeof buf,
+      //          "file number = %" PRIu64 "(%" PRIu64 "), sequence = %" PRIu64,
+      //          pair.second->fd.GetNumber(), pair.first, sequence);
+      return Status::Corruption("Separate value missing");
     }
   }
-  assert(buffer->file_number() == pair.second->fd.GetNumber());
+  assert(buffer->file_number() == meta->fd.GetNumber());
   return Status::OK();
 }
 
@@ -1327,16 +1342,26 @@ LazyBuffer Version::TransToCombined(const Slice& user_key, uint64_t sequence,
     return LazyBuffer(std::move(s));
   }
   uint64_t file_number = SeparateHelper::DecodeFileNumber(value.slice());
+  const auto* ucmp = value.comparator();
   auto& dependence_map = storage_info_.dependence_map();
+  auto& file_map = storage_info_.dependence_multi_map();
+  FileMetaData* meta;
+  auto status = file_map->QueryFileMeta(file_number, user_key, ucmp,
+                                        version_number_, &meta);
+  if (!status.ok()) {
+    return LazyBuffer(Status::Corruption("Separate value dependence missing"));
+  }
   auto find = dependence_map.find(file_number);
   if (find == dependence_map.end()) {
     return LazyBuffer(Status::Corruption("Separate value dependence missing"));
   } else {
+    // we replace the dependence_map_ pair with our filemeta
     return LazyBuffer(
         this,
         {reinterpret_cast<uint64_t>(user_key.data()), user_key.size(), sequence,
-         reinterpret_cast<uint64_t>(&*find)},
-        Slice::Invalid(), find->second->fd.GetNumber());
+         // reinterpret_cast<uint64_t>(&*find)},
+         reinterpret_cast<uint64_t>(meta)},
+        Slice::Invalid(), meta->fd.GetNumber());
   }
 }
 
@@ -1464,8 +1489,8 @@ void Version::GetKey(const Slice& user_key, const Slice& ikey, Status* status,
                      const FileMetaData& blob) {
   RecordTick(db_statistics_, GC_GET_KEYS);
   bool value_found;
-  // Note that this function set separate_helper to be nullptr, which means the 
-  // the value would not be combined when it is found. 
+  // Note that this function set separate_helper to be nullptr, which means the
+  // the value would not be combined when it is found.
   // The related code can be found in the following file and line:
   //   get_context.cc: 196 ~ 203
   GetContext get_context(cfd_->internal_comparator().user_comparator(), nullptr,
@@ -1474,8 +1499,8 @@ void Version::GetKey(const Slice& user_key, const Slice& ikey, Status* status,
                          nullptr, nullptr, nullptr, env_, seq);
   ReadOptions options;
 
-  // Construct the FilePicker to iteratively return all files that may contain 
-  // the target ikey. 
+  // Construct the FilePicker to iteratively return all files that may contain
+  // the target ikey.
   FilePicker fp(
       storage_info_.files_, user_key, ikey, &storage_info_.level_files_brief_,
       storage_info_.num_non_empty_levels_, &storage_info_.file_indexer_,
@@ -3231,9 +3256,17 @@ Status VersionSet::ProcessManifestWrites(std::deque<ManifestWriter>& writers,
       for (int i = 0; i < static_cast<int>(versions.size()); ++i) {
         assert(!builder_guards.empty() &&
                builder_guards.size() == versions.size());
+        // builder_guards[i]->DoApplyAndSaveTo(
+        //     versions[i]->storage_info(),
+        //     mutable_cf_options_ptrs[i]->maintainer_job_ratio);
+
+        // (ZNS): We replace the original implementation with our version 
+        // carrying the corresponding version number to satifiy the MVCC 
+        // feature of our inheritence tree upon updating it
         builder_guards[i]->DoApplyAndSaveTo(
             versions[i]->storage_info(),
-            mutable_cf_options_ptrs[i]->maintainer_job_ratio);
+            mutable_cf_options_ptrs[i]->maintainer_job_ratio,
+            versions[i]->GetVersionNumber());
       }
     }
 

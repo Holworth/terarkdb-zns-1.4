@@ -433,6 +433,7 @@ InternalIterator* TableCache::NewIterator(
   return result;
 }
 
+// @k is the internal key
 Status TableCache::Get(const ReadOptions& options,
                        const FileMetaData& file_meta,
                        const DependenceMap& dependence_map, const Slice& k,

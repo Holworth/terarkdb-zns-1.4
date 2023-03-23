@@ -14,6 +14,7 @@
 
 #include <algorithm>
 
+#include "rocksdb/comparator.h"
 #include "rocksdb/terark_namespace.h"
 
 namespace TERARKDB_NAMESPACE {
@@ -439,10 +440,12 @@ LazyBuffer::LazyBuffer(size_t _size) noexcept
   LazyBufferState::reserve_buffer(this, _size);
 }
 
-LazyBuffer::LazyBuffer(const SliceParts& _slice_parts, uint64_t _file_number)
+LazyBuffer::LazyBuffer(const SliceParts& _slice_parts, uint64_t _file_number,
+                       Comparator* _ucmp)
     : state_(LazyBufferState::light_state()),
       context_{},
-      file_number_(_file_number) {
+      file_number_(_file_number),
+      ucmp_(_ucmp) {
   size_t size = 0;
   for (int i = 0; i < _slice_parts.num_parts; ++i) {
     size += _slice_parts.parts[i].size();
@@ -479,7 +482,8 @@ LazyBuffer::LazyBuffer(std::string* _string) noexcept
 #pragma GCC diagnostic pop
 #endif
 
-void LazyBuffer::reset(const SliceParts& _slice_parts, uint64_t _file_number) {
+void LazyBuffer::reset(const SliceParts& _slice_parts, uint64_t _file_number,
+                       Comparator* _ucmp) {
   destroy();
   size_t size = 0;
   for (int i = 0; i < _slice_parts.num_parts; ++i) {
@@ -492,8 +496,10 @@ void LazyBuffer::reset(const SliceParts& _slice_parts, uint64_t _file_number) {
       dst += _slice_parts.parts[i].size();
     }
     file_number_ = _file_number;
+    ucmp_ = _ucmp;
   } else {
     file_number_ = uint64_t(-1);
+    ucmp_ = nullptr;
   }
 }
 

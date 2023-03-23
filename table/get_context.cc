@@ -191,6 +191,8 @@ bool GetContext::SaveValue(const ParsedInternalKey& parsed_key,
       is_finished_ = true;
       return false;
     };
+
+    value.set_comparator(ucmp_);
     switch (type) {
       case kTypeValueIndex:
         if (separate_helper_ == nullptr) {

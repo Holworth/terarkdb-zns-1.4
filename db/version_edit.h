@@ -344,6 +344,19 @@ class VersionEdit {
     new_files_.emplace_back(level, f);
   }
 
+  // Add a new blob file to this edit
+  void AddNewBlob(const FileMetaData& f) { new_blobs_.emplace_back(f); }
+
+  // (ZNS): Add a blob dependence relationship between two blobs. The semantics
+  // of this function is: f1 "generates" f2 in a garbage collection task
+  //
+  // However, I don't know if it's ok to transfer the the object here directly
+  // Maybe we should transfer the fields of the object as the above function
+  // does?
+  void AddBlobDependence(const FileMetaData& f1, const FileMetaData& f2) {
+    blob_dependence_.emplace_back(std::make_pair(f1, f2));
+  }
+
   // Delete the specified "file" from the specified "level".
   void DeleteFile(int level, uint64_t file) {
     deleted_files_.insert({level, file});
@@ -400,6 +413,12 @@ class VersionEdit {
   const std::vector<std::pair<int, FileMetaData>>& GetNewFiles() {
     return new_files_;
   }
+  const std::vector<FileMetaData>& GetNewBlobs() { return new_blobs_; }
+
+  const std::vector<std::pair<FileMetaData, FileMetaData>> GetBlobDependence() {
+    return blob_dependence_;
+  }
+
   void DoApplyCallback(const Status& s) {
     for (auto& apply_callback : apply_callback_vec_) {
       apply_callback(s);
@@ -443,6 +462,11 @@ class VersionEdit {
 
   DeletedFileSet deleted_files_;
   std::vector<std::pair<int, FileMetaData>> new_files_;
+
+  // (ZNS): This is the new blob files and blob dependence for our multi-stream
+  // inheritence tree
+  std::vector<FileMetaData> new_blobs_;
+  std::vector<std::pair<FileMetaData, FileMetaData>> blob_dependence_;
 
   //
   autovector<ApplyCallback, 2> apply_callback_vec_;

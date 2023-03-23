@@ -37,6 +37,9 @@ class VersionBuilder {
   bool CheckConsistencyForNumLevels();
   void Apply(VersionEdit* edit);
   void SaveTo(VersionStorageInfo* vstorage, double maintainer_job_ratio);
+  void Apply(VersionEdit* edit, uint64_t version_num);
+  void SaveTo(VersionStorageInfo* vstorage, double maintainer_job_ratio,
+              uint64_t version_num);
   void LoadTableHandlers(InternalStats* internal_stats,
                          bool prefetch_index_and_filter_in_cache,
                          const SliceTransform* prefix_extractor,

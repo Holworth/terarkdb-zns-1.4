@@ -329,6 +329,12 @@ enum Histograms : uint32_t {
   // ZNS related
   ZNS_GC_MICRO,
 
+  // Time spent on BuildPartitionTable
+  ZNS_BUILD_PARTITION_TABLE,
+
+  // Time spent on probe_key in BuildPartitionTable
+  ZNS_BUILD_PARTITION_TABLE_PROBE,
+
   // Time spent on ZonedBlockDeive::UpdateCompactionIterStats
   ZNS_COMPACTION_ITER_STATS_UPDATE,
 

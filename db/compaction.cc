@@ -111,7 +111,7 @@ Status BuildInheritanceTree(const std::vector<CompactionInputFiles>& inputs,
   //    output sst = 12
   //    dependence_map = {5,6,8,9,10,11}
   //
-  //        1  2   4 5 6
+  //       1   2   4 5 6
   //        \ /     \ /
   //         3      7          8
   //          \    /           |
@@ -162,6 +162,7 @@ Status BuildInheritanceTree(const std::vector<CompactionInputFiles>& inputs,
       }
       // purge unnecessary node & merge input inheritance tree
       for (auto fn : tp->inheritance_tree) {
+        // dependence_map.count(fn) == 0 means this file might have been released
         if (inheritance_tree->back() == fn && dependence_map.count(fn) == 0) {
           ++pruge_count;
           inheritance_tree->pop_back();

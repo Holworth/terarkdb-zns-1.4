@@ -9,6 +9,7 @@
 
 #include "rocksdb/compaction_dispatcher.h"
 
+#include "db/version_edit.h"
 #include "table/get_context.h"
 
 #ifndef __STDC_FORMAT_MACROS
@@ -627,7 +628,8 @@ std::string RemoteCompactionDispatcher::Worker::DoCompaction(Slice data) {
     Slice user_key(reinterpret_cast<const char*>(context->data[0]),
                    context->data[1]);
     uint64_t sequence = context->data[2];
-    auto pair = *reinterpret_cast<DependenceMap::value_type*>(context->data[3]);
+    // auto pair = *reinterpret_cast<DependenceMap::value_type*>(context->data[3]);
+    auto *meta = reinterpret_cast<FileMetaData *>(context->data[3]);
     bool value_found = false;
     SequenceNumber context_seq;
     GetContext get_context(ucmp, nullptr, immutable_cf_options.info_log,
@@ -637,7 +639,8 @@ std::string RemoteCompactionDispatcher::Worker::DoCompaction(Slice data) {
     IterKey iter_key;
     iter_key.SetInternalKey(user_key, sequence, kValueTypeForSeek);
     TableReader* reader;
-    auto s = get_table_reader(pair.second->fd.GetNumber(), &reader);
+    // auto s = get_table_reader(pair.second->fd.GetNumber(), &reader);
+    auto s = get_table_reader(meta->fd.GetNumber(), &reader);    
     if (!s.ok()) {
       return s;
     }
@@ -653,14 +656,14 @@ std::string RemoteCompactionDispatcher::Worker::DoCompaction(Slice data) {
       if (get_context.State() == GetContext::kCorrupt) {
         return std::move(get_context).CorruptReason();
       } else {
-        char buf[128];
-        snprintf(buf, sizeof buf,
-                 "file number = %" PRIu64 "(%" PRIu64 "), sequence = %" PRIu64,
-                 pair.second->fd.GetNumber(), pair.first, sequence);
-        return Status::Corruption("Separate value missing", buf);
+        // char buf[128];
+        // snprintf(buf, sizeof buf,
+        //          "file number = %" PRIu64 "(%" PRIu64 "), sequence = %" PRIu64,
+        //          pair.second->fd.GetNumber(), pair.first, sequence);
+        return Status::Corruption("Separate value missing");
       }
     }
-    assert(buffer->file_number() == pair.second->fd.GetNumber());
+    assert(buffer->file_number() == meta->fd.GetNumber());
     return Status::OK();
   };
 

@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "rocksdb/cleanable.h"
+#include "rocksdb/comparator.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "rocksdb/terark_namespace.h"
@@ -113,6 +114,7 @@ class LazyBuffer {
   const LazyBufferState* state_;
   LazyBufferContext context_;
   uint64_t file_number_;
+  const Comparator* ucmp_;
 
   // Call LazyBufferState::destroy if state_ not nullptr
   void destroy();
@@ -138,11 +140,13 @@ class LazyBuffer {
 
   // Init with slice from copying or referring
   explicit LazyBuffer(const Slice& _slice, bool _copy = false,
-                      uint64_t _file_number = uint64_t(-1));
+                      uint64_t _file_number = uint64_t(-1),
+                      Comparator* ucmp = nullptr);
 
   // Init with slice parts from copying
   explicit LazyBuffer(const SliceParts& _slice_parts,
-                      uint64_t _file_number = uint64_t(-1));
+                      uint64_t _file_number = uint64_t(-1),
+                      Comparator* ucmp = nullptr);
 
   // Init with Status
   explicit LazyBuffer(Status&& _status) : LazyBuffer() {
@@ -157,12 +161,14 @@ class LazyBuffer {
 
   // Init from cleanup function for slice
   LazyBuffer(const Slice& _slice, Cleanable&& _cleanable,
-             uint64_t _file_number = uint64_t(-1)) noexcept;
+             uint64_t _file_number = uint64_t(-1),
+             Comparator* ucmp = nullptr) noexcept;
 
   // Init from customize state
   LazyBuffer(const LazyBufferState* _state, const LazyBufferContext& _context,
              const Slice& _slice = Slice::Invalid(),
-             uint64_t _file_number = uint64_t(-1)) noexcept;
+             uint64_t _file_number = uint64_t(-1),
+             Comparator* ucmp = nullptr) noexcept;
 
   ~LazyBuffer() { destroy(); }
 
@@ -267,11 +273,11 @@ class LazyBuffer {
 
   // Reset buffer from copying or referring
   void reset(const Slice& _slice, bool _copy = false,
-             uint64_t _file_number = uint64_t(-1));
+             uint64_t _file_number = uint64_t(-1), Comparator* ucmp = nullptr);
 
   // Reset buffer from copying
   void reset(const SliceParts& _slice_parts,
-             uint64_t _file_number = uint64_t(-1));
+             uint64_t _file_number = uint64_t(-1), Comparator* ucmp = nullptr);
 
   // Reset with Status
   void reset(Status&& _status) { assign_error(std::move(_status)); }
@@ -284,12 +290,12 @@ class LazyBuffer {
 
   // Reset cleanup function for slice
   void reset(const Slice& _slice, Cleanable&& _cleanable,
-             uint64_t _file_number = uint64_t(-1));
+             uint64_t _file_number = uint64_t(-1), Comparator* ucmp = nullptr);
 
   // Reset to customize state
   void reset(const LazyBufferState* _state, const LazyBufferContext& _context,
              const Slice& _slice = Slice::Invalid(),
-             uint64_t _file_number = uint64_t(-1));
+             uint64_t _file_number = uint64_t(-1), Comparator* ucmp = nullptr);
 
   // Fetch source and copy it
   void assign(const LazyBuffer& _source);
@@ -302,6 +308,11 @@ class LazyBuffer {
 
   // Return the certain file number of SST, -1 for unknown
   uint64_t file_number() const { return file_number_; }
+
+  // Return the user comparator, nullptr for none
+  const Comparator* comparator() const { return ucmp_; }
+
+  void set_comparator(const Comparator* _ucmp) { ucmp_ = _ucmp; }
 
   // Pin this buffer, detach life cycle from some object
   void pin(LazyBufferPinLevel level = LazyBufferPinLevel::DB);
@@ -360,13 +371,15 @@ inline LazyBufferContext* LazyBufferState::get_context(LazyBuffer* buffer) {
 inline LazyBuffer::LazyBuffer() noexcept
     : state_(LazyBufferState::light_state()),
       context_{},
-      file_number_(uint64_t(-1)) {}
+      file_number_(uint64_t(-1)),
+      ucmp_(nullptr) {}
 
 inline LazyBuffer::LazyBuffer(LazyBuffer&& _buffer) noexcept
     : slice_(_buffer.slice_),
       state_(_buffer.state_),
       context_(_buffer.context_),
-      file_number_(_buffer.file_number_) {
+      file_number_(_buffer.file_number_),
+      ucmp_(_buffer.ucmp_) {
   if (state_ == LazyBufferState::light_state() &&
       _buffer.size_ <= sizeof(LazyBufferContext)) {
     fix_light_state(_buffer);
@@ -376,11 +389,12 @@ inline LazyBuffer::LazyBuffer(LazyBuffer&& _buffer) noexcept
 }
 
 inline LazyBuffer::LazyBuffer(const Slice& _slice, bool _copy,
-                              uint64_t _file_number)
+                              uint64_t _file_number, Comparator* ucmp)
     : slice_(_slice),
       state_(LazyBufferState::light_state()),
       context_{},
-      file_number_(_file_number) {
+      file_number_(_file_number),
+      ucmp_(ucmp) {
   assert(_slice.valid());
   if (_copy) {
     state_->assign_slice(this, _slice);
@@ -388,11 +402,12 @@ inline LazyBuffer::LazyBuffer(const Slice& _slice, bool _copy,
 }
 
 inline LazyBuffer::LazyBuffer(const Slice& _slice, Cleanable&& _cleanable,
-                              uint64_t _file_number) noexcept
+                              uint64_t _file_number, Comparator* ucmp) noexcept
     : slice_(_slice),
       state_(LazyBufferState::cleanable_state()),
       context_{},
-      file_number_(_file_number) {
+      file_number_(_file_number),
+      ucmp_(ucmp) {
   assert(_slice.valid());
   static_assert(sizeof _cleanable == sizeof context_, "");
   static_assert(alignof(Cleanable) == alignof(LazyBufferContext), "");
@@ -401,12 +416,13 @@ inline LazyBuffer::LazyBuffer(const Slice& _slice, Cleanable&& _cleanable,
 
 inline LazyBuffer::LazyBuffer(const LazyBufferState* _state,
                               const LazyBufferContext& _context,
-                              const Slice& _slice,
-                              uint64_t _file_number) noexcept
+                              const Slice& _slice, uint64_t _file_number,
+                              Comparator* ucmp) noexcept
     : slice_(_slice),
       state_(_state),
       context_(_context),
-      file_number_(_file_number) {
+      file_number_(_file_number),
+      ucmp_(ucmp) {
   assert(_state != nullptr);
 }
 
@@ -428,6 +444,7 @@ inline void LazyBuffer::assign_error(Status&& _status) {
     assert(!slice_.valid());
   }
   file_number_ = uint64_t(-1);
+  ucmp_ = nullptr;
 }
 
 inline void LazyBuffer::clear() {
@@ -437,6 +454,7 @@ inline void LazyBuffer::clear() {
   state_->assign_slice(this, Slice());
   assert(size_ == 0);
   file_number_ = uint64_t(-1);
+  ucmp_ = nullptr;
 }
 
 inline void LazyBuffer::reset() {
@@ -446,6 +464,7 @@ inline void LazyBuffer::reset() {
   }
   slice_ = Slice::Invalid();
   file_number_ = uint64_t(-1);
+  ucmp_ = nullptr;
 }
 
 inline void LazyBuffer::reset(LazyBuffer&& _buffer) {
@@ -455,6 +474,7 @@ inline void LazyBuffer::reset(LazyBuffer&& _buffer) {
     state_ = _buffer.state_;
     context_ = _buffer.context_;
     file_number_ = _buffer.file_number_;
+    ucmp_ = _buffer.ucmp_;
     if (state_ == LazyBufferState::light_state() &&
         _buffer.size_ <= sizeof(LazyBufferContext)) {
       fix_light_state(_buffer);
@@ -465,7 +485,7 @@ inline void LazyBuffer::reset(LazyBuffer&& _buffer) {
 }
 
 inline void LazyBuffer::reset(const Slice& _slice, bool _copy,
-                              uint64_t _file_number) {
+                              uint64_t _file_number, Comparator* _ucmp) {
   assert(_slice.valid());
   if (_copy) {
     state_->assign_slice(this, _slice);
@@ -476,27 +496,31 @@ inline void LazyBuffer::reset(const Slice& _slice, bool _copy,
     state_ = LazyBufferState::light_state();
   }
   file_number_ = _file_number;
+  ucmp_ = _ucmp;
 }
 
 inline void LazyBuffer::reset(const Slice& _slice, Cleanable&& _cleanable,
-                              uint64_t _file_number) {
+                              uint64_t _file_number, Comparator* _ucmp) {
   assert(_slice.valid());
   destroy();
   state_ = LazyBufferState::cleanable_state();
   slice_ = _slice;
   new (&context_) Cleanable(std::move(_cleanable));
   file_number_ = _file_number;
+  ucmp_ = _ucmp;
 }
 
 inline void LazyBuffer::reset(const LazyBufferState* _state,
                               const LazyBufferContext& _context,
-                              const Slice& _slice, uint64_t _file_number) {
+                              const Slice& _slice, uint64_t _file_number,
+                              Comparator* _ucmp) {
   assert(_state != nullptr);
   destroy();
   slice_ = _slice;
   state_ = _state;
   context_ = _context;
   file_number_ = _file_number;
+  ucmp_ = _ucmp;
 }
 
 inline Status LazyBuffer::fetch() const {

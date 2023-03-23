@@ -451,6 +451,9 @@ Status FlushJob::WriteLevel0Table() {
                      f.fd.GetFileSize(), f.smallest, f.largest,
                      f.fd.smallest_seqno, f.fd.largest_seqno,
                      f.marked_for_compaction, f.prop);
+      if (i > 0) {
+        edit_->AddNewBlob(f);
+      }
     }
   }
 

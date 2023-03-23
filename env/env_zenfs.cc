@@ -1,3 +1,4 @@
+#include <atomic>
 #include <chrono>
 #include <ratio>
 
@@ -191,9 +192,12 @@ class ZenFSOracle : public Oracle {
  public:
   ZenFSOracle(uint64_t limit)
       : global_version_(0), limit_(limit), evict_rate_(0.1) {}
-  ~ZenFSOracle() override{};
+  ~ZenFSOracle() override {
+    std::cout << ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+                 ">>>>>>>>>>>>>>>>>>>";
+    std::cout << total_probed_hot_or_warm << "\n";
+  };
 
-  // fuck I have to sort the @update
   void MergeKeys(std::unordered_map<std::string, uint64_t>& update) override {
     std::map<uint64_t, std::vector<const std::string*>> sorted;
     for (const auto& i : update) {
@@ -201,12 +205,14 @@ class ZenFSOracle : public Oracle {
     }
     // evict_rate_ * update.size() is a very huge number. We set a hard-limit
     // 300 for the number of keys to process
-    auto check_key_cnt = std::min(update.size() * evict_rate_, 300.0);
+    auto check_key_cnt = std::min(update.size() * evict_rate_, 1000.0);
     auto high_occurrence = sorted.rbegin();
     for (int i = 0; i < check_key_cnt && high_occurrence != sorted.rend();) {
       for (auto& k : high_occurrence->second) {
         AddKey(*k, high_occurrence->first);
-        ++i;
+        if ((++i) >= check_key_cnt) {
+          break;
+        }
       }
       ++high_occurrence;
     }
@@ -240,6 +246,13 @@ class ZenFSOracle : public Oracle {
   KeyType ProbeKeyType(const std::string& key, uint64_t occurrence) override {
     std::shared_ptr<KeyHint> hint;
     if (key_set_.find(key, hint)) {
+      if (hint->hotness.IsHot() || hint->hotness.IsWarm()) {
+        ++total_probed_hot_or_warm;
+        // std::cout
+        //     << ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+        //        ">>>>>>>>>>>>>>> Accumulated Total probed hot(warm) keys "
+        //     << total_probed_hot_or_warm << "\n";
+      }
       return hint->hotness;
     }
 
@@ -304,7 +317,7 @@ class ZenFSOracle : public Oracle {
 
     stats_.max_occurrence = occurrence_map_.rbegin()->first;
     stats_.min_occurrence = occurrence_map_.begin()->first;
-    
+
     return;
   }
 
@@ -399,6 +412,8 @@ class ZenFSOracle : public Oracle {
 
   std::mutex map_lock;
   std::map<uint64_t, std::unordered_set<std::string>> occurrence_map_;
+
+  std::atomic_uint64_t total_probed_hot_or_warm = 0;
 
   void Evict() {
     auto wanted = evict_rate_ * limit_;
