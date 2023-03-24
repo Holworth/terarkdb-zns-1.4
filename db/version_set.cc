@@ -9,7 +9,11 @@
 
 #include "db/version_set.h"
 
+#include <memory>
+
+#include "db/filemap.h"
 #include "db/version_edit.h"
+#include "fs/log.h"
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
@@ -1236,6 +1240,7 @@ VersionStorageInfo::VersionStorageInfo(
       valid_entry_cnt_(0),
       invalid_file_cnt_(0),
       invalid_entry_cnt_(0),
+      dependence_multi_map_(nullptr),
       base_level_(num_levels_ == 1 ? -1 : 1),
       level_multiplier_(0.0),
       files_by_compaction_pri_(num_levels_),
@@ -1260,7 +1265,6 @@ VersionStorageInfo::VersionStorageInfo(
       force_consistency_checks_(_force_consistency_checks),
       blob_marked_for_compaction_(false) {
   ++files_;  // level -1 used for dependence files
-  dependence_multi_map_ = std::make_shared<FileMap>();
 }
 
 Version::Version(ColumnFamilyData* column_family_data, VersionSet* vset,
@@ -1288,7 +1292,23 @@ Version::Version(ColumnFamilyData* column_family_data, VersionSet* vset,
       refs_(0),
       env_options_(env_opt),
       mutable_cf_options_(mutable_cf_options),
-      version_number_(version_number) {}
+      version_number_(version_number) {
+  // (ZNS): Make the new version points to the same file map during upon
+  // creating this new version
+  std::shared_ptr<FileMap> last_filemap = nullptr;
+  if (cfd_ == nullptr || cfd_->current() == nullptr) {  // init version
+    last_filemap = std::make_shared<FileMap>();
+    ZnsLog(kCyan, "Create new FileMap (%p)", last_filemap.get());
+  } else {
+    // An existed version must have a valid FileMap
+    last_filemap = cfd_->current()->storage_info()->dependence_multi_map();
+    assert(last_filemap != nullptr);
+  }
+  storage_info_.dependence_multi_map_ = last_filemap;
+  ZnsLog(kCyan, "Switch to FileMap (%p), size: %lu",
+         storage_info_.dependence_multi_map().get(),
+         storage_info_.dependence_multi_map()->size());
+}
 
 Status Version::fetch_buffer(LazyBuffer* buffer) const {
   auto context = get_context(buffer);
@@ -1342,13 +1362,18 @@ LazyBuffer Version::TransToCombined(const Slice& user_key, uint64_t sequence,
     return LazyBuffer(std::move(s));
   }
   uint64_t file_number = SeparateHelper::DecodeFileNumber(value.slice());
-  const auto* ucmp = value.comparator();
+  const auto* ucmp = user_comparator();
   auto& dependence_map = storage_info_.dependence_map();
   auto& file_map = storage_info_.dependence_multi_map();
   FileMetaData* meta;
   auto status = file_map->QueryFileMeta(file_number, user_key, ucmp,
                                         version_number_, &meta);
   if (!status.ok()) {
+    ZnsLog(kRed, "Query FileMap with fn %lu failed", file_number);
+    // For debug purpose, if error happens, we re-execute this function in
+    // debugger
+    auto status = file_map->QueryFileMeta(file_number, user_key, ucmp,
+                                          version_number_, &meta);
     return LazyBuffer(Status::Corruption("Separate value dependence missing"));
   }
   auto find = dependence_map.find(file_number);
@@ -3260,8 +3285,8 @@ Status VersionSet::ProcessManifestWrites(std::deque<ManifestWriter>& writers,
         //     versions[i]->storage_info(),
         //     mutable_cf_options_ptrs[i]->maintainer_job_ratio);
 
-        // (ZNS): We replace the original implementation with our version 
-        // carrying the corresponding version number to satifiy the MVCC 
+        // (ZNS): We replace the original implementation with our version
+        // carrying the corresponding version number to satifiy the MVCC
         // feature of our inheritence tree upon updating it
         builder_guards[i]->DoApplyAndSaveTo(
             versions[i]->storage_info(),

@@ -2,8 +2,10 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <unordered_map>
 #include <vector>
+#include <folly/concurrency/ConcurrentHashMap.h>
 
 #include "db/dbformat.h"
 #include "db/version_edit.h"
@@ -113,9 +115,12 @@ class FileMap {
   // is undecided
   void Shrink(Comparator* u_cmp);
 
+  // Return the number of nodes in current file map
+  size_t size() const { return nodes_.size(); }
+
  private:
   // Indexing node in a map makes the query swiftly
-  std::unordered_map<uint64_t, std::shared_ptr<MapNode>> nodes_;
+  folly::ConcurrentHashMap<uint64_t, std::shared_ptr<MapNode>> nodes_;
   Monitor monitor_;   // Monitoring information
   bool auto_shrink_;  // enable auto shrink or not
 

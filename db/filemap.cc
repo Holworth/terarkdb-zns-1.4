@@ -3,6 +3,7 @@
 #include <cassert>
 
 #include "db/dbformat.h"
+#include "fs/log.h"
 #include "rocksdb/comparator.h"
 #include "rocksdb/status.h"
 
@@ -10,9 +11,10 @@ namespace TERARKDB_NAMESPACE {
 
 Status FileMap::AddNode(FileMetaData *fmeta, uint64_t version_num) {
   auto file_number = fmeta->fd.GetNumber();
-  if (nodes_.count(file_number) > 0) {
+  if (nodes_.find(file_number) != nodes_.end()) {
     return Status::Corruption("Node to add already exists");
   }
+  ZnsLog(kCyan, "FileMap::AddNode %lu.sst", fmeta->fd.GetNumber());
   nodes_.emplace(file_number, std::make_shared<MapNode>(fmeta, version_num));
   return Status::OK();
 }
@@ -25,7 +27,7 @@ Status FileMap::AddDerivedNode(FileMetaData *p, FileMetaData *c,
 Status FileMap::AddDerivedNode(uint64_t p_filenum, FileMetaData *c,
                                uint64_t version_num) {
   auto c_filenum = c->fd.GetNumber();
-  if (nodes_.count(p_filenum) == 0) {
+  if (nodes_.find(p_filenum) == nodes_.end()) {
     return Status::Corruption("Request parent node does not exist");
   }
   auto p_node = nodes_[p_filenum];
@@ -33,7 +35,7 @@ Status FileMap::AddDerivedNode(uint64_t p_filenum, FileMetaData *c,
   assert(p_node->version_num < version_num);
 
   std::shared_ptr<MapNode> add_child = nullptr;
-  if (nodes_.count(c_filenum) > 0) {
+  if (nodes_.find(c_filenum) != nodes_.end()) {
     add_child = nodes_[c_filenum];
     assert(add_child->version_num == version_num);
   } else {
@@ -45,13 +47,15 @@ Status FileMap::AddDerivedNode(uint64_t p_filenum, FileMetaData *c,
 
   // TODO: May sort the children nodes based on their key ranges
 
+  ZnsLog(kCyan, "FileMap::AddDerivedNode %llu.sst -> %llu.sst", p_filenum,
+         c_filenum);
   return Status::OK();
 }
 
 Status FileMap::QueryFileNumber(uint64_t fn, const Slice &ukey,
                                 const Comparator *u_cmp, uint64_t version_num,
                                 uint64_t *ret) {
-  if (nodes_.count(fn) == 0) {
+  if (nodes_.find(fn) == nodes_.end()) {
     return Status::Corruption("Queried file number does not exist");
   }
   auto node = nodes_[fn];
@@ -89,7 +93,7 @@ Status FileMap::QueryFileNumber(uint64_t fn, const Slice &ukey,
 Status FileMap::QueryFileMeta(uint64_t fn, const Slice &ukey,
                               const Comparator *u_cmp, uint64_t version_num,
                               FileMetaData **filemeta) {
-  if (nodes_.count(fn) == 0) {
+  if (nodes_.find(fn) == nodes_.end()) {
     return Status::Corruption("Queried file number does not exist");
   }
   auto node = nodes_[fn];

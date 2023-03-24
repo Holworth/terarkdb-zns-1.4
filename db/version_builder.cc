@@ -153,10 +153,6 @@ struct VersionBuilderContextImpl : VersionBuilder::Context {
   uint64_t maintainer_job_limit;
   chash_map<uint64_t, DependenceItem> dependence_map;
   chash_map<uint64_t, InheritanceItem> inheritance_counter;
-  std::vector<FileMetaData*> new_blobs;
-  // Each element (fn, FileMetaData) means the file labeled with fn generates
-  // FileMetaData
-  std::vector<std::pair<uint64_t, FileMetaData*>> blob_dependence;
 };
 
 class VersionBuilder::Rep {
@@ -191,6 +187,12 @@ class VersionBuilder::Rep {
 
   std::unique_ptr<VersionBuilderContextImpl> context_;
   std::unique_ptr<VersionBuilderDebugger> debugger_;
+
+  // The original design is to put the following two structs in the ContextImpl
+  // However, a later VersionBuilder will refer to the same Context pointer as
+  // the older one, which cause our assertion in Apply() fails. 
+  std::vector<FileMetaData*> new_blobs_;
+  std::vector<std::pair<uint64_t, FileMetaData*>> blob_dependence_;
 
   const EnvOptions& env_options_;
   Logger* info_log_;
@@ -783,16 +785,16 @@ class VersionBuilder::Rep {
         PutSst(f, level);
         if (level == -1) {
           // (ZNS): This is a new blob file, we need to deal with it specially
-          // for updating our file mapping. 
+          // for updating our file mapping.
           // Similar to the original processing flow, we first convert the edit
-          // data structure into the temporary data structure stored in the 
-          // context and do the actual update to the dependence tree when 
+          // data structure into the temporary data structure stored in the
+          // context and do the actual update to the dependence tree when
           // SaveTo occurs
-          context_->new_blobs.emplace_back(f);
+          new_blobs_.emplace_back(f);
           // Find all its predecessor files by traversing through the dependence
           for (const auto& [f1, f2] : edit->GetBlobDependence()) {
             if (f2.fd.GetNumber() == f->fd.GetNumber()) {
-              context_->blob_dependence.emplace_back(
+              blob_dependence_.emplace_back(
                   std::make_pair(f1.fd.GetNumber(), f));
             }
           }
@@ -807,8 +809,8 @@ class VersionBuilder::Rep {
         }
       }
     }
-    assert(context_->new_blobs.size() == edit->GetNewBlobs().size());
-    assert(context_->blob_dependence.size() ==
+    assert(new_blobs_.size() == edit->GetNewBlobs().size());
+    assert(blob_dependence_.size() ==
            edit->GetBlobDependence().size());
 
     // shrink files
@@ -862,11 +864,14 @@ class VersionBuilder::Rep {
     }
 
     // (ZNS): Update the multi inheritence tree
-    for (auto& f : context_->new_blobs) {
-      vstorage->dependence_multi_map()->AddNode(f, version_num);
+    Status s = Status::OK();
+    for (auto& f : new_blobs_) {
+      s = vstorage->dependence_multi_map()->AddNode(f, version_num);
+      assert(s.ok());
     }
-    for (auto& [fn, f] : context_->blob_dependence) {
-      vstorage->dependence_multi_map()->AddDerivedNode(fn, f, version_num);
+    for (auto& [fn, f] : blob_dependence_) {
+      s = vstorage->dependence_multi_map()->AddDerivedNode(fn, f, version_num);
+      assert(s.ok());
     }
 
     vstorage->set_read_amplification(read_amp);

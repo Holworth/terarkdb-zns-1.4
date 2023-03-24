@@ -2580,7 +2580,7 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
       }
       value = input->value();
       // if (find->second->fd.GetNumber() != value.file_number()) {
-      if (find->fd.GetNumber() != value.file_number()) {        
+      if (find->fd.GetNumber() != value.file_number()) {
         ++counter.file_number_mismatch;
         break;
       }
@@ -4191,6 +4191,21 @@ Status CompactionJob::InstallCompactionResults(
     for (const auto& out : sub_compact.blob_outputs) {
       compaction->edit()->AddFile(-1, out.meta);
       compaction->AddOutputTableFileNumber(out.meta.fd.GetNumber());
+
+      // TODO: Update the edit to add blob dependence information
+      // Each input file involved in this GC task emits one dependence map
+      // to each of the output blobs.
+      // We may avoid some edge by checking the key range of input blob files
+      // and output blobs. For example, an input file with range [10, 20]
+      // will definitely not write a key into an output file of  [100, 120]
+      compaction->edit()->AddNewBlob(out.meta);
+      for (const auto& level : *sub_compact.compaction->inputs()) {
+        // This must be a garbage collection work
+        assert(level.level == -1);
+        for (const auto& f : level.files) {
+          compaction->edit()->AddBlobDependence(*f, out.meta);
+        }
+      }
     }
   }
 

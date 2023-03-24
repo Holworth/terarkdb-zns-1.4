@@ -128,6 +128,21 @@ ENDIF()
 
 
 #-------------------------- Third-party Library Flags for RocksDB
+list(APPEND 
+    THIRDPARTY_LIBS 
+    folly 
+    glog 
+    boost_filesystem 
+    boost_program_options 
+    boost_regex 
+    boost_system 
+    dl 
+    double-conversion 
+    iberty 
+    fmt
+  )
+
+
 if(WITH_JEMALLOC)
   add_definitions(-DROCKSDB_JEMALLOC -DJEMALLOC_NO_DEMANGLE)
   get_target_property(jemalloc_INCLUDE_DIR jemalloc INCLUDE_DIRECTORIES)
