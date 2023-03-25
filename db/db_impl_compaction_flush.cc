@@ -3230,6 +3230,7 @@ Status DBImpl::BackgroundZNSGarbageCollection(bool* made_progress,
   *made_progress = false;
   mutex_.AssertHeld();
   TEST_SYNC_POINT("DBImpl::BackgroundZNSGarbageCollection:Start");
+  ZnsLog(kCyan, "DBImpl::BackgroundZNSGarbageCollection:Start");
 
   std::unique_ptr<Compaction> c;
   CompactionJobStats garbage_collection_job_stats;

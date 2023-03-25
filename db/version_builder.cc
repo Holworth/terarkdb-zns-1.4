@@ -10,6 +10,8 @@
 #include "db/version_builder.h"
 
 #include "db/version_edit.h"
+#include "fs/fs_zenfs.h"
+#include "fs/log.h"
 
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
@@ -133,6 +135,8 @@ struct VersionBuilderContextImpl : VersionBuilder::Context {
     size_t depended : 1;
     size_t count : sizeof(size_t) * 8 - 1;
     size_t item_pos;
+    // For multi-stream purpose, storing the locations of all dependent files
+    std::vector<size_t> depend_item_pos_vec;
   };
 
   void UnrefFile(FileMetaData* f) {
@@ -190,7 +194,7 @@ class VersionBuilder::Rep {
 
   // The original design is to put the following two structs in the ContextImpl
   // However, a later VersionBuilder will refer to the same Context pointer as
-  // the older one, which cause our assertion in Apply() fails. 
+  // the older one, which cause our assertion in Apply() fails.
   std::vector<FileMetaData*> new_blobs_;
   std::vector<std::pair<uint64_t, FileMetaData*>> blob_dependence_;
 
@@ -225,16 +229,30 @@ class VersionBuilder::Rep {
     }
   }
 
+  // @item: The depended file
+  // @item_pos: The pos of the slot this item occupies in dependence_map
+  // This function aims to update the predecessors' states
   void PutInheritance(DependenceItem* item, size_t item_pos) {
     auto& inheritance_counter = context_->inheritance_counter;
     bool replace = inheritance_counter.count(item->f->fd.GetNumber()) == 0;
     auto emplace = [&](uint64_t file_number) {
-      auto ib = inheritance_counter.emplace(file_number,
-                                            InheritanceItem{0, 1, item_pos});
+      auto ib = inheritance_counter.emplace(
+          file_number, InheritanceItem{0, 1, item_pos, {item_pos}});
+      // ZnsLog(kYellow, "PutInheritance: inheritance_counter.emplace(%lu.sst)",
+      //        file_number);
       if (!ib.second) {
+        // (kqh): Add the reference counter if the file already exists
+        // i.e. The file already has a dependent file
         ++ib.first->second.count;
         if (replace) {
+          // Update the inheritence file points to the latest dependent file,
+          // i.e. the file specified by item
           ib.first->second.item_pos = item_pos;
+
+          // For multi-stream output purpose
+          // ZnsLog(kYellow, "Add %lu to %lu depend_item_pos_vec",
+          //        item->file_number, file_number);
+          ib.first->second.depend_item_pos_vec.emplace_back(item_pos);
         }
       }
     };
@@ -250,6 +268,7 @@ class VersionBuilder::Rep {
       auto find = inheritance_counter.find(file_number);
       assert(find != inheritance_counter.end());
       if (--find->second.count == 0) {
+        // ZnsLog(kYellow, "Inheritance_count.erase(%lu.sst)", file_number);
         inheritance_counter.erase(find);
       }
     };
@@ -264,8 +283,14 @@ class VersionBuilder::Rep {
     uint64_t file_number = f->fd.GetNumber();
     auto ib = dependence_map_.emplace(
         file_number, DependenceItem{file_number, 0, 0, false, level, f, 0});
+    // ZnsLog(kYellow, "PutSst(%lu.sst)", f->fd.GetNumber());
     f->Ref();
+    // (kqh) ib.second = true means the emplace works successfully, i.e.
+    // the f does not exist int the dependence_map_ ever before
     if (ib.second) {
+      // Since this file have been successfully put into the dependence map,
+      // we will have to update all its predecessor (i.e.) The file points
+      // to it.
       PutInheritance(&ib.first->second, ib.first.pos());
     } else {
       auto& item = ib.first->second;
@@ -296,11 +321,50 @@ class VersionBuilder::Rep {
     return nullptr;
   }
 
+  // This function seems only works for KeySST.
   void SetDependence(FileMetaData* f, bool is_map, bool is_estimation,
                      double ratio, bool finish) {
     auto& dependence_map = context_->dependence_map;
     auto& inheritance_counter = context_->inheritance_counter;
     auto dependence_version = context_->dependence_version;
+
+    // Original implementation only uses one file
+    // for (auto& dependence : f->prop.dependence) {
+    //   auto find = inheritance_counter.find(dependence.file_number);
+    //   if (find == inheritance_counter.end()) {
+    //     if (finish) {
+    //       status_ = Status::Aborted("Missing dependence files");
+    //     }
+    //     continue;
+    //   }
+    //   assert(dependence_map.pos(find->second.item_pos) !=
+    //   dependence_map.end()); auto item =
+    //   &dependence_map.pos(find->second.item_pos)->second; if (finish) {
+    //     find->second.depended = true;
+    //     item->is_estimation |= is_estimation;
+    //     assert(is_map || dependence.entry_count > 0);
+    //     item->entry_depended += dependence.entry_count * ratio;
+    //   }
+    //   item->dependence_version = dependence_version;
+    //   ZnsLog(kMagenta,
+    //          "Calculating dependence file %lu.sst of file %lu, the
+    //          inheritance " "file is %lu.sst, item->gc_forbiden_version=%lu, "
+    //          "item->dependence_version=%lu",
+    //          dependence.file_number, f->fd.GetNumber(), item->file_number,
+    //          item->gc_forbidden_version, item->dependence_version);
+    //   if (is_map) {
+    //     item->gc_forbidden_version = dependence_version;
+    //     if (!item->f->prop.dependence.empty()) {
+    //       SetDependence(item->f, item->f->prop.is_map_sst(),
+    //                     is_estimation || item->f->prop.is_map_sst(),
+    //                     ratio * dependence.entry_count /
+    //                         std::max<uint64_t>(1, item->f->prop.num_entries),
+    //                     finish);
+    //     }
+    //   }
+    // }
+
+    // Our implementation dealing with multi-stream output case
     for (auto& dependence : f->prop.dependence) {
       auto find = inheritance_counter.find(dependence.file_number);
       if (find == inheritance_counter.end()) {
@@ -309,23 +373,43 @@ class VersionBuilder::Rep {
         }
         continue;
       }
-      assert(dependence_map.pos(find->second.item_pos) != dependence_map.end());
-      auto item = &dependence_map.pos(find->second.item_pos)->second;
-      if (finish) {
-        find->second.depended = true;
-        item->is_estimation |= is_estimation;
-        assert(is_map || dependence.entry_count > 0);
-        item->entry_depended += dependence.entry_count * ratio;
-      }
-      item->dependence_version = dependence_version;
-      if (is_map) {
-        item->gc_forbidden_version = dependence_version;
-        if (!item->f->prop.dependence.empty()) {
-          SetDependence(item->f, item->f->prop.is_map_sst(),
-                        is_estimation || item->f->prop.is_map_sst(),
-                        ratio * dependence.entry_count /
-                            std::max<uint64_t>(1, item->f->prop.num_entries),
-                        finish);
+
+      auto inheritance_item = find->second;
+      auto depend_item_pos_vec_sz = inheritance_item.depend_item_pos_vec.size();
+      // Traverse all depend_item of this inheritance_item and set their
+      // dependence version. The original implementation assumes each
+      // inheritance_item only has one dependence
+      for (const auto& depend_item_pos : inheritance_item.depend_item_pos_vec) {
+        // We jump over the element if we found the inheritance_item has one
+        // dependent file that is exactly itself.
+        if (depend_item_pos_vec_sz > 1 && depend_item_pos == find.pos()) {
+          continue;
+        }
+        assert(dependence_map.pos(depend_item_pos) != dependence_map.end());
+        auto item = &dependence_map.pos(depend_item_pos)->second;
+        if (finish) {
+          find->second.depended = true;
+          item->is_estimation |= is_estimation;
+          assert(is_map || dependence.entry_count > 0);
+          item->entry_depended += dependence.entry_count * ratio;
+        }
+        item->dependence_version = dependence_version;
+        // ZnsLog(
+        //     kMagenta,
+        //     "Calculating dependence file %lu.sst of file %lu, the inheritance
+        //     " "file is %lu.sst, item->gc_forbiden_version=%lu, "
+        //     "item->dependence_version=%lu",
+        //     dependence.file_number, f->fd.GetNumber(), item->file_number,
+        //     item->gc_forbidden_version, item->dependence_version);
+        if (is_map) {
+          item->gc_forbidden_version = dependence_version;
+          if (!item->f->prop.dependence.empty()) {
+            SetDependence(item->f, item->f->prop.is_map_sst(),
+                          is_estimation || item->f->prop.is_map_sst(),
+                          ratio * dependence.entry_count /
+                              std::max<uint64_t>(1, item->f->prop.num_entries),
+                          finish);
+          }
         }
       }
     }
@@ -333,12 +417,25 @@ class VersionBuilder::Rep {
 
   void CalculateDependence(bool finish, bool is_open_db,
                            double maintainer_job_ratio) {
+    ZnsLog(kYellow, "CalculateDependence::Start");
+    Defer d([&]() { ZnsLog(kYellow, "CalculateDependence::End"); });
     if (!finish && (!is_open_db || context_->new_deleted_files < 65536)) {
       return;
     }
     auto& dependence_map = context_->dependence_map;
     auto& inheritance_counter = context_->inheritance_counter;
     auto dependence_version = ++context_->dependence_version;
+
+    for (auto it = dependence_map.begin(); it != dependence_map.end(); ++it) {
+      // ZnsLog(kYellow, "File %lu.sst has dependence version of %lu",
+      //        it->second.file_number, it->second.dependence_version);
+    }
+
+    // ZNS: level = -1 is skipped, so where do the blobs get the
+    // dependence_version assigned
+
+    // No, the statement above is incorrect, the blobs got assigned in the
+    // following for loop
     for (int level = 0; level < num_levels_; ++level) {
       for (auto& pair : context_->levels[level]) {
         auto file_number = pair.first;
@@ -347,12 +444,26 @@ class VersionBuilder::Rep {
         auto& item = dependence_map[file_number];
         assert(item.level >= 0);
         item.dependence_version = dependence_version;
+        // ZnsLog(kYellow, "Assigning dependence version %lu to file %lu.sst",
+        //        dependence_version, file_number);
         item.gc_forbidden_version = dependence_version;
         if (!item.f->prop.dependence.empty()) {
+          ZnsLog(kMagenta, "");
           SetDependence(item.f, item.f->prop.is_map_sst(),
                         item.f->prop.is_map_sst(), 1, finish);
+        } else {
+          // ZnsLog(kMagenta, "Skiping file %lu.sst\n", item.f->fd.GetNumber());
         }
       }
+    }
+
+    // fuck the last blob generated by our GC is somehow magically assigned a
+    // correct dependence_version
+
+    // the inheritance_counter should be able to handle multiple output files
+    for (auto it = dependence_map.begin(); it != dependence_map.end(); ++it) {
+      // ZnsLog(kYellow, "File %lu.sst has dependence version of %lu",
+      //        it->second.file_number, it->second.dependence_version);
     }
 
     std::vector<uint64_t> old_file_queue;
@@ -428,6 +539,8 @@ class VersionBuilder::Rep {
           context_->maintainer_job_limit +=
               uint64_t(item.f->fd.GetFileSize() * maintainer_job_ratio);
         }
+        // ZnsLog(kYellow, "Removing %lu.sst from inheritance",
+        //        item.f->fd.GetNumber());
         DelInheritance(item.f);
         context_->UnrefFile(item.f);
         it = dependence_map.erase(it);
@@ -696,6 +809,8 @@ class VersionBuilder::Rep {
     auto exists = [&](uint64_t file_number) {
       auto find = context_->inheritance_counter.find(file_number);
       assert(find != context_->inheritance_counter.end());
+      ZnsLog(kMagenta, "%lu.sst depended: %lu", file_number,
+             find->second.depended);
       return bool(find->second.depended);
     };
 
@@ -774,6 +889,10 @@ class VersionBuilder::Rep {
       }
     }
 
+    if (edit->GetNewFiles().size() == 2) {
+      ZnsLog(kYellow, "Seems to be a GC");
+    }
+
     // Add new files
     for (auto& pair : edit->GetNewFiles()) {
       int level = pair.first;
@@ -790,7 +909,9 @@ class VersionBuilder::Rep {
           // data structure into the temporary data structure stored in the
           // context and do the actual update to the dependence tree when
           // SaveTo occurs
+          f->Ref();
           new_blobs_.emplace_back(f);
+          assert(f->fd.GetNumber() != 0);
           // Find all its predecessor files by traversing through the dependence
           for (const auto& [f1, f2] : edit->GetBlobDependence()) {
             if (f2.fd.GetNumber() == f->fd.GetNumber()) {
@@ -810,17 +931,34 @@ class VersionBuilder::Rep {
       }
     }
     assert(new_blobs_.size() == edit->GetNewBlobs().size());
-    assert(blob_dependence_.size() ==
-           edit->GetBlobDependence().size());
+    assert(blob_dependence_.size() == edit->GetBlobDependence().size());
+
+    // (ZNS): This is for debug
+    for (auto& pair : edit->GetNewFiles()) {
+      auto fn = pair.second.fd.GetNumber();
+      assert(context_->inheritance_counter.count(fn) > 0);
+    }
 
     // shrink files
+    // (ZNS): We use FileMap to replace the original inheritence tree, there is
+    // no need to calculate the dependence any more
     CalculateDependence(false, edit->is_open_db(), 0);
+
+    // (ZNS): This is for debug
+    for (auto& pair : edit->GetNewFiles()) {
+      auto fn = pair.second.fd.GetNumber();
+      auto f = context_->dependence_map[fn];
+      std::cout << fn << ": " << f.dependence_version << "\n";
+      assert(context_->inheritance_counter.count(fn) > 0);
+    }
   }
 
   void SaveTo(VersionStorageInfo* vstorage, double maintainer_job_ratio,
               uint64_t version_num) {
     Init();
     CheckConsistency(vstorage, true);
+    // (ZNS): We use FileMap to replace the original inheritence tree, there is
+    // no need to calculate the dependence any more
     CalculateDependence(true, false, maintainer_job_ratio);
     auto exists = [&](uint64_t file_number) {
       auto find = context_->inheritance_counter.find(file_number);

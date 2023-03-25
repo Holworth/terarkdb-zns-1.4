@@ -2189,7 +2189,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   }
 
   Version* input_version = sub_compact->compaction->input_version();
-  // auto& dependence_map = input_version->storage_info()->dependence_map();
+  auto& dependence_map = input_version->storage_info()->dependence_map();
   const auto& dependence_multi_map =
       input_version->storage_info()->dependence_multi_map();
   auto version_number = input_version->GetVersionNumber();
@@ -2216,6 +2216,28 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   std::vector<std::pair<uint64_t, FileMetaData*>> blob_meta_cache;
   assert(!sub_compact->compaction->inputs()->empty());
   blob_meta_cache.reserve(sub_compact->compaction->inputs()->front().size());
+  size_t inheritance_tree_purge_count = 0;
+
+  auto blob_closer = [&](PlacementFileType close_type) {
+    if (status.ok() &&
+        (shutting_down_->load(std::memory_order_relaxed) || cfd->IsDropped())) {
+      status = Status::ShutdownInProgress(
+          "Database shutdown or Column family drop during compaction");
+    }
+    if (status.ok()) {
+      status = input->status();
+    }
+    std::vector<uint64_t> inheritance_tree;
+
+    if (status.ok()) {
+      status = BuildInheritanceTree(
+          *sub_compact->compaction->inputs(), dependence_map, input_version,
+          &inheritance_tree, &inheritance_tree_purge_count);
+    }
+
+    return FinishSpecialCompactionOutputBlob(status, sub_compact,
+                                             inheritance_tree, close_type);
+  };
 
   std::string key_buffer;
   while (status.ok() && !cfd->IsDropped() && input->Valid()) {
@@ -2320,6 +2342,27 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
       sub_compact->num_output_records++;
     } while (false);
 
+    auto mutable_cf_options = cfd->GetLatestMutableCFOptions();
+    auto ioptions = cfd->ioptions();
+    size_t target_blob_file_size = MaxBlobSize(
+        *mutable_cf_options, ioptions->num_levels, ioptions->compaction_style);
+    
+    // target_blob_file_size = 300ULL * (1ULL << 20);
+
+    // a break can leave blob_builder uninitialized
+    if (sub_compact->partition_builder &&
+        sub_compact->partition_builder->FileSize() > target_blob_file_size) {
+      status = blob_closer(PlacementFileType::Partition(partition_id));
+      if (!status.ok()) {
+        return;
+      }
+      status = OpenCompactionOutputBlob(
+          sub_compact, PlacementFileType::Partition(partition_id));
+      if (!status.ok()) {
+        return;
+      }
+    }
+
     {
       auto start = env_->NowMicros();
       input->Next();
@@ -2337,7 +2380,6 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   }
   std::vector<uint64_t> inheritance_tree;
   size_t inheritance_tree_pruge_count = 0;
-  auto& dependence_map = input_version->storage_info()->dependence_map();
   if (status.ok()) {
     status = BuildInheritanceTree(
         *sub_compact->compaction->inputs(), dependence_map, input_version,
@@ -2345,9 +2387,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   }
 
   auto start = env_->NowMicros();
-  Status s = FinishSpecialCompactionOutputBlob(
-      status, sub_compact, inheritance_tree,
-      PlacementFileType::Partition(partition_id));
+  Status s = blob_closer(PlacementFileType::Partition(partition_id));
   time_counter.gc_write += (env_->NowMicros() - start);
 
   if (status.ok()) {
@@ -2408,6 +2448,10 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   input.reset();
   sub_compact->status = status;
   sub_compact->blob_outputs = sub_compact->partition_blob_outputs;
+
+  for (const auto &m : sub_compact->blob_outputs) {
+    ZnsLog(kYellow, "Output file %lu ", m.meta.fd.GetNumber());
+  }
   {
     StopWatch sw(env_, stats_, ZNS_ORACLE_MERGEKEYS);
     env_->GetOracle()->MergeKeys(occurrence_map);
@@ -4199,6 +4243,7 @@ Status CompactionJob::InstallCompactionResults(
       // and output blobs. For example, an input file with range [10, 20]
       // will definitely not write a key into an output file of  [100, 120]
       compaction->edit()->AddNewBlob(out.meta);
+      assert(out.meta.fd.GetNumber() != 0);
       for (const auto& level : *sub_compact.compaction->inputs()) {
         // This must be a garbage collection work
         assert(level.level == -1);
@@ -4421,6 +4466,8 @@ Status CompactionJob::OpenCompactinOutputBlobHelper(
   assert(blob_builder == nullptr);
   // no need to lock because VersionSet::next_file_number_ is atomic
   uint64_t file_number = versions_->NewFileNumber();
+  ZnsLog(Color::kYellow, "Opening SST(%lu) in OpenCompactionOutputBlobHelper",
+         file_number);
   std::string fname =
       TableFileName(sub_compact->compaction->immutable_cf_options()->cf_paths,
                     file_number, sub_compact->compaction->output_path_id());

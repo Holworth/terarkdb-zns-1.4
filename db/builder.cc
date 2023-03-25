@@ -25,6 +25,7 @@
 #include "db/range_del_aggregator.h"
 #include "db/table_cache.h"
 #include "db/version_edit.h"
+#include "fs/fs_zenfs.h"
 #include "fs/log.h"
 #include "monitoring/iostats_context_imp.h"
 #include "monitoring/thread_status_util.h"
@@ -643,6 +644,8 @@ Status BuildPartitionTable(
   //           << std::endl;
 
   StopWatch sw(env, ioptions.statistics, ZNS_BUILD_PARTITION_TABLE);
+  // ZnsLog(kCyan, "BuildPartitionTable::Start");
+  // Defer d([]() { ZnsLog(kCyan, "BuildPartitionTable::End"); });
 
   assert((column_family_id ==
           TablePropertiesCollectorFactory::Context::kUnknownColumnFamily) ==

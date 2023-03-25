@@ -9,6 +9,9 @@
 
 #include "db/flush_job.h"
 
+#include "fs/fs_zenfs.h"
+#include "fs/log.h"
+
 #ifndef __STDC_FORMAT_MACROS
 #define __STDC_FORMAT_MACROS
 #endif
@@ -295,6 +298,9 @@ void FlushJob::Cancel(const Status& s) {
 Status FlushJob::WriteLevel0Table() {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_FLUSH_WRITE_L0);
+  ZnsLog(kCyan, "WriteLevel0Table::Start");
+  Defer f([&]() { ZnsLog(kCyan, "WriteLevel0Table::End"); });
+
   db_mutex_->AssertHeld();
   const uint64_t start_micros = db_options_.env->NowMicros();
   Status s;
@@ -386,14 +392,14 @@ Status FlushJob::WriteLevel0Table() {
       // (kqh) Pass the L0 information down to the File system layer
       auto env_options = env_options_;
       env_options.db_file_type = DBFileType::kFlushFile;
-      // 
+      //
       // (kqh): Replace the original BuildTable with our BuildPartitionTable to
       // enable multi-stream write: Hot, Warm, HashPartition.
-      // 
+      //
       // TODO: Currently we only enable this feature in a flush job, we may
       // replace all original BuildTable invocation with our partition version
       // if this implementation is error-free
-      // 
+      //
 
       // s = BuildTable(
       s = BuildPartitionTable(
@@ -472,6 +478,7 @@ Status FlushJob::WriteLevel0Table() {
   MeasureTime(stats_, FLUSH_TIME, stats.micros);
   cfd_->internal_stats()->AddCompactionStats(0 /* level */, stats);
   RecordFlushIOStats();
+
   return s;
 }
 
