@@ -417,8 +417,8 @@ class VersionBuilder::Rep {
 
   void CalculateDependence(bool finish, bool is_open_db,
                            double maintainer_job_ratio) {
-    ZnsLog(kYellow, "CalculateDependence::Start");
-    Defer d([&]() { ZnsLog(kYellow, "CalculateDependence::End"); });
+    // ZnsLog(kYellow, "CalculateDependence::Start");
+    // Defer d([&]() { ZnsLog(kYellow, "CalculateDependence::End"); });
     if (!finish && (!is_open_db || context_->new_deleted_files < 65536)) {
       return;
     }
@@ -448,7 +448,7 @@ class VersionBuilder::Rep {
         //        dependence_version, file_number);
         item.gc_forbidden_version = dependence_version;
         if (!item.f->prop.dependence.empty()) {
-          ZnsLog(kMagenta, "");
+          // ZnsLog(kMagenta, "");
           SetDependence(item.f, item.f->prop.is_map_sst(),
                         item.f->prop.is_map_sst(), 1, finish);
         } else {
@@ -491,9 +491,22 @@ class VersionBuilder::Rep {
     for (auto it = dependence_map.begin(); it != dependence_map.end();) {
       auto& item = it->second;
       if (item.dependence_version == dependence_version) {
+        auto inheritance_item = inheritance_counter.find(it->first);
+        auto& pos_vec = inheritance_item->second.depend_item_pos_vec;
+        // if (inheritance_counter.count(it->first) <= 0 ||
+        //     inheritance_item->second.item_pos != it.pos()) {
+        //   ZnsLog(kYellow, "Illegal inheritance counter for file %lu",
+        //          it->first);
+        // }
+
+        // We modify the assertion since we use the pos_vec to record the 
+        // item it depends on, instead of a single entry
+        // assert(inheritance_counter.count(it->first) > 0 &&
+        //        inheritance_counter.find(it->first)->second.item_pos ==
+        //            it.pos());
         assert(inheritance_counter.count(it->first) > 0 &&
-               inheritance_counter.find(it->first)->second.item_pos ==
-                   it.pos());
+               std::find(pos_vec.begin(), pos_vec.end(), it.pos()) !=
+                   pos_vec.end());
         if (finish) {
           uint64_t entry_depended = std::max<uint64_t>(1, item.entry_depended);
           entry_depended = std::min(item.f->prop.num_entries, entry_depended);
@@ -947,8 +960,6 @@ class VersionBuilder::Rep {
     // (ZNS): This is for debug
     for (auto& pair : edit->GetNewFiles()) {
       auto fn = pair.second.fd.GetNumber();
-      auto f = context_->dependence_map[fn];
-      std::cout << fn << ": " << f.dependence_version << "\n";
       assert(context_->inheritance_counter.count(fn) > 0);
     }
   }

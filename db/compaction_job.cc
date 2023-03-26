@@ -12,6 +12,7 @@
 #include <cassert>
 
 #include "db/compaction.h"
+#include "fs/fs_zenfs.h"
 #include "fs/log.h"
 #include "rocksdb/listener.h"
 #include "table/iterator_wrapper.h"
@@ -2147,6 +2148,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
 }  // namespace TERARKDB_NAMESPACE
 
 void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
+  ZnsLog(kYellow, "ProcessGarbageCollection::Start");
+  Defer d([]() { ZnsLog(kYellow, "ProcessGarbageCollection::End"); });
+
   assert(sub_compact != nullptr);
   ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
 
@@ -2202,6 +2206,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     uint64_t garbage_type = 0;
     uint64_t get_not_found = 0;
     uint64_t file_number_mismatch = 0;
+    uint64_t output_record = 0;
   } counter;
 
   struct {
@@ -2333,6 +2338,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
         auto start = env_->NowMicros();
         status = sub_compact->partition_builder->Add(curr_key, value);
         time_counter.gc_write += (env_->NowMicros() - start);
+        counter.output_record += 1;
       }
       if (!status.ok()) {
         break;
@@ -2346,7 +2352,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     auto ioptions = cfd->ioptions();
     size_t target_blob_file_size = MaxBlobSize(
         *mutable_cf_options, ioptions->num_levels, ioptions->compaction_style);
-    
+
     // target_blob_file_size = 300ULL * (1ULL << 20);
 
     // a break can leave blob_builder uninitialized
@@ -2389,6 +2395,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   auto start = env_->NowMicros();
   Status s = blob_closer(PlacementFileType::Partition(partition_id));
   time_counter.gc_write += (env_->NowMicros() - start);
+  ZnsLog(kCyan, "ProcessGarbageCollection::Last writer done");
 
   if (status.ok()) {
     status = s;
@@ -2398,20 +2405,33 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     auto& inputs = *sub_compact->compaction->inputs();
     assert(inputs.size() == 1 && inputs.front().level == -1);
     auto& files = inputs.front().files;
+    // ROCKS_LOG_INFO(
+    //     db_options_.info_log,
+    //     "[%s] [JOB %d] Table #%" PRIu64 " ZNSGC: %" PRIu64
+    //     " inputs from %zd files. %" PRIu64
+    //     " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
+    //     " get not found, %" PRIu64
+    //     " file number mismatch ], inheritance tree: %zd -> %zd",
+    //     cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
+    //     files.size(), counter.input - meta.prop.num_entries,
+    //     sub_compact->compaction->num_antiquation() * 100. / counter.input,
+    //     counter.garbage_type, counter.get_not_found,
+    //     counter.file_number_mismatch,
+    //     meta.prop.inheritance.size() + inheritance_tree_pruge_count,
+    //     meta.prop.inheritance.size());
+
+    // Use our own GC log formats
     ROCKS_LOG_INFO(
         db_options_.info_log,
-        "[%s] [JOB %d] Table #%" PRIu64 " GC: %" PRIu64
-        " inputs from %zd files. %" PRIu64
-        " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
-        " get not found, %" PRIu64
-        " file number mismatch ], inheritance tree: %zd -> %zd",
-        cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
-        files.size(), counter.input - meta.prop.num_entries,
-        sub_compact->compaction->num_antiquation() * 100. / counter.input,
-        counter.garbage_type, counter.get_not_found,
-        counter.file_number_mismatch,
-        meta.prop.inheritance.size() + inheritance_tree_pruge_count,
-        meta.prop.inheritance.size());
+        "[%s] [JOB %d] Table #%" PRIu64
+        "[ZNS GC][Type: %s][Inputs: %lu records]"
+        "[Inputs: %lu files][Outputs: %lu records][Drop: %lu records (%.2lf)]",
+        cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(),
+        sub_compact->compaction->hotness_type().ToString().c_str(),
+        counter.input, files.size(), counter.output_record,
+        (counter.input - counter.output_record),
+        1 - (double)counter.output_record / counter.input);
+
     if ((std::find_if(files.begin(), files.end(),
                       [](FileMetaData* f) {
                         return f->marked_for_compaction;
@@ -2449,13 +2469,18 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   sub_compact->status = status;
   sub_compact->blob_outputs = sub_compact->partition_blob_outputs;
 
-  for (const auto &m : sub_compact->blob_outputs) {
-    ZnsLog(kYellow, "Output file %lu ", m.meta.fd.GetNumber());
-  }
+  // for (const auto &m : sub_compact->blob_outputs) {
+  // ZnsLog(kYellow, "Output file %lu ", m.meta.fd.GetNumber());
+  // }
   {
     StopWatch sw(env_, stats_, ZNS_ORACLE_MERGEKEYS);
     env_->GetOracle()->MergeKeys(occurrence_map);
   }
+
+  // The database notify the ZenFS there might be a chance to release the 
+  // GCWriteZone one specific partition holds
+  // env_->MaybeReleaseGCWriteZone(sub_compact->compaction->hotness_type());
+
   // Report the stats
   stats_->measureTime(ZNS_PARTITION_GC_GET_KEY, time_counter.get_key);
   stats_->measureTime(ZNS_PARTITION_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
@@ -2511,6 +2536,7 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
     uint64_t garbage_type = 0;
     uint64_t get_not_found = 0;
     uint64_t file_number_mismatch = 0;
+    uint64_t output_record = 0;
   } counter;
   std::vector<std::pair<uint64_t, FileMetaData*>> blob_meta_cache;
   assert(!sub_compact->compaction->inputs()->empty());
@@ -2633,6 +2659,7 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
       assert(sub_compact->blob_builder != nullptr);
       assert(sub_compact->current_blob_output() != nullptr);
       status = sub_compact->blob_builder->Add(curr_key, value);
+      ++counter.output_record;
       if (!status.ok()) {
         break;
       }
@@ -2694,20 +2721,31 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
     auto& inputs = *sub_compact->compaction->inputs();
     assert(inputs.size() == 1 && inputs.front().level == -1);
     auto& files = inputs.front().files;
+    // ROCKS_LOG_INFO(
+    //     db_options_.info_log,
+    //     "[%s] [JOB %d] Table #%" PRIu64 " GC: %" PRIu64
+    //     " inputs from %zd files. %" PRIu64
+    //     " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
+    //     " get not found, %" PRIu64
+    //     " file number mismatch ], inheritance tree: %zd -> %zd",
+    //     cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
+    //     files.size(), counter.input - meta.prop.num_entries,
+    //     sub_compact->compaction->num_antiquation() * 100. / counter.input,
+    //     counter.garbage_type, counter.get_not_found,
+    //     counter.file_number_mismatch,
+    //     meta.prop.inheritance.size() + inheritance_tree_pruge_count,
+    //     meta.prop.inheritance.size());
     ROCKS_LOG_INFO(
         db_options_.info_log,
-        "[%s] [JOB %d] Table #%" PRIu64 " GC: %" PRIu64
-        " inputs from %zd files. %" PRIu64
-        " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
-        " get not found, %" PRIu64
-        " file number mismatch ], inheritance tree: %zd -> %zd",
-        cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
-        files.size(), counter.input - meta.prop.num_entries,
-        sub_compact->compaction->num_antiquation() * 100. / counter.input,
-        counter.garbage_type, counter.get_not_found,
-        counter.file_number_mismatch,
-        meta.prop.inheritance.size() + inheritance_tree_pruge_count,
-        meta.prop.inheritance.size());
+        "[%s] [JOB %d] Table #%" PRIu64
+        "[ZNS GC][Type: %s][Inputs: %lu records]"
+        "[Inputs: %lu files][Outputs: %lu records][Drop: %lu records (%.2lf)]",
+        cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(),
+        sub_compact->compaction->hotness_type().ToString().c_str(),
+        counter.input, files.size(), counter.output_record,
+        (counter.input - counter.output_record),
+        1 - (double)counter.output_record / counter.input);
+
     if ((std::find_if(files.begin(), files.end(),
                       [](FileMetaData* f) {
                         return f->marked_for_compaction;
@@ -3834,7 +3872,6 @@ Status CompactionJob::FinishCompactionOutputBlob(
   if (s.ok()) {
     s = sub_compact->blob_outfile->Close();
   }
-  sub_compact->blob_outfile.reset();
 
   TableProperties tp;
   if (s.ok()) {
@@ -3844,6 +3881,9 @@ Status CompactionJob::FinishCompactionOutputBlob(
     meta->prop.raw_value_size = tp.raw_value_size;
     meta->prop.flags |= TablePropertyCache::kNoRangeDeletions;
   }
+
+  env_->UpdateTableProperties(sub_compact->blob_outfile->file_name(), &tp);
+  sub_compact->blob_outfile.reset();
 
   if (s.ok()) {
     // Output to event logger and fire events.
@@ -3974,6 +4014,18 @@ Status CompactionJob::FinishSpecialCompactionOutputBlob(
     s = blob_outfile->Close();
   }
 
+  TableProperties tp;
+  if (s.ok()) {
+    tp = blob_builder->GetTableProperties();
+    meta->prop.num_deletions = tp.num_deletions;
+    meta->prop.raw_key_size = tp.raw_key_size;
+    meta->prop.raw_value_size = tp.raw_value_size;
+    meta->prop.flags |= TablePropertyCache::kNoRangeDeletions;
+  }
+
+  // Update the blob information to ZenFS
+  env_->UpdateTableProperties(blob_outfile->file_name(), &tp);
+
   if (type.IsHot()) {
     sub_compact->hot_outfile.reset();
   } else if (type.IsWarm()) {
@@ -3982,15 +4034,6 @@ Status CompactionJob::FinishSpecialCompactionOutputBlob(
     sub_compact->partition_outfile.reset();
   } else {
     assert(false);
-  }
-
-  TableProperties tp;
-  if (s.ok()) {
-    tp = blob_builder->GetTableProperties();
-    meta->prop.num_deletions = tp.num_deletions;
-    meta->prop.raw_key_size = tp.raw_key_size;
-    meta->prop.raw_value_size = tp.raw_value_size;
-    meta->prop.flags |= TablePropertyCache::kNoRangeDeletions;
   }
 
   if (s.ok()) {
@@ -4415,19 +4458,31 @@ Status CompactionJob::OpenCompactionOutputFile(
 Status CompactionJob::OpenCompactionOutputBlob(
     SubcompactionState* sub_compact) {
   // (kqh): Control the file type of compaction output file
-  switch (sub_compact->compaction->compaction_type()) {
-    case kZNSHotGarbageCollection:
-      return OpenCompactinOutputBlobHelper(
-          sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
-          PlacementFileType::Hot(), true);
-    case kZNSWarmGarbageCollection:
-      return OpenCompactinOutputBlobHelper(
-          sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
-          PlacementFileType::Warm(), true);
-    default:
-      return OpenCompactinOutputBlobHelper(
-          sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
-          PlacementFileType::NoType(), true);
+  auto compaction_type = sub_compact->compaction->compaction_type();
+  if (compaction_type == kKeyValueCompaction ||
+      compaction_type == kMapCompaction) {
+    // for normal key sst compaction
+    return OpenCompactinOutputBlobHelper(sub_compact, sub_compact->blob_outfile,
+                                         sub_compact->blob_builder,
+                                         PlacementFileType::NoType(), true);
+  } else {
+    switch (sub_compact->compaction->sub_compaction_type()) {
+      // for ZNS garbage collection
+      case kZNSHotGarbageCollection:
+        return OpenCompactinOutputBlobHelper(
+            sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
+            PlacementFileType::Hot(), true);
+      case kZNSWarmGarbageCollection:
+        return OpenCompactinOutputBlobHelper(
+            sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
+            PlacementFileType::Warm(), true);
+      default:
+        return OpenCompactinOutputBlobHelper(
+            sub_compact, sub_compact->blob_outfile, sub_compact->blob_builder,
+            PlacementFileType::Partition(
+                sub_compact->compaction->placement_id()),
+            true);
+    }
   }
 }
 

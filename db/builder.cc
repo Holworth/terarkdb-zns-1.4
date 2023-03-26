@@ -1062,13 +1062,13 @@ Status BuildPartitionTable(
 
   ioptions.statistics->measureTime(ZNS_BUILD_PARTITION_TABLE_PROBE,
                                    counter.probe_key_type_total_time);
-  ZnsLog(
-      kCyan,
-      "[BuildPartitionTable][Output: %lu][Hot: %lu (%.2lf)][Warm: %lu (%.2lf)]",
-      counter.total_output_count, counter.sep_hot_count,
-      (double)counter.sep_hot_count / counter.total_output_count,
-      counter.sep_warm_count,
-      (double)counter.sep_warm_count / counter.total_output_count);
+  ZnsLog(kCyan,
+         "[BuildPartitionTable][Output: %lu][Separate Hot: %lu "
+         "(%.2lf)][Separate Warm: %lu (%.2lf)]",
+         counter.total_output_count, counter.sep_hot_count,
+         (double)counter.sep_hot_count / counter.total_output_count,
+         counter.sep_warm_count,
+         (double)counter.sep_warm_count / counter.total_output_count);
 
   // Output to event logger and fire events.
   EventHelpers::LogAndNotifyTableFileCreationFinished(

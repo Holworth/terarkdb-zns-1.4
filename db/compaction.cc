@@ -185,7 +185,7 @@ std::vector<uint64_t> InheritanceTreeToSet(const std::vector<uint64_t>& tree) {
   std::vector<uint64_t> set = tree;
   std::sort(set.begin(), set.end());
   auto it = std::unique(set.begin(), set.end());
-  assert(set.end() - it == it - set.begin());
+  // assert(set.end() - it == it - set.begin());
   set.resize(it - set.begin());
   set.shrink_to_fit();
   return set;

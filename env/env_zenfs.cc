@@ -1,8 +1,11 @@
+#include <folly/concurrency/ConcurrentHashMap.h>
+
 #include <atomic>
 #include <chrono>
 #include <ratio>
 
 #include "db/compaction_iteration_stats.h"
+#include "fs/log.h"
 #include "fs/metrics.h"
 #include "fs/snapshot.h"
 #include "rocksdb/env.h"
@@ -199,6 +202,8 @@ class ZenFSOracle : public Oracle {
   };
 
   void MergeKeys(std::unordered_map<std::string, uint64_t>& update) override {
+    ZnsLog(kYellow, "ZenFSOracle::MergeKeys::Start");
+    Defer d([]() { ZnsLog(kYellow, "ZenFSOracle::MergeKeys::End"); });
     std::map<uint64_t, std::vector<const std::string*>> sorted;
     for (const auto& i : update) {
       sorted[i.second].push_back(&i.first);
@@ -244,19 +249,30 @@ class ZenFSOracle : public Oracle {
   }
 
   KeyType ProbeKeyType(const std::string& key, uint64_t occurrence) override {
-    std::shared_ptr<KeyHint> hint;
-    if (key_set_.find(key, hint)) {
-      if (hint->hotness.IsHot() || hint->hotness.IsWarm()) {
+    // ZnsLog(kYellow, "ZenFSOracle::ProbeKeyType::Start");
+    // Defer d([]() { ZnsLog(kYellow, "ZenFSOracle::ProbeKeyType::End"); });
+    // std::shared_ptr<KeyHint> hint;
+    if (auto it = key_set_.find(key); it != key_set_.end()) {
+      // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
+      //              "entering ProbeKeyType if\n";
+      if (it->second->hotness.IsHot() || it->second->hotness.IsWarm()) {
         ++total_probed_hot_or_warm;
         // std::cout
-        //     << ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+        //     <<
+        //     ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
         //        ">>>>>>>>>>>>>>> Accumulated Total probed hot(warm) keys "
         //     << total_probed_hot_or_warm << "\n";
       }
-      return hint->hotness;
+      // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
+      //              "Leaving ProbeKeyType if\n";
+
+      return it->second->hotness;
     }
 
     if (occurrence >= stats_.average_occurrence) {
+      // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
+      //              "Leaving ProbeKeyType Hot\n";
+
       return KeyType::Hot();
     }
 
@@ -265,8 +281,14 @@ class ZenFSOracle : public Oracle {
     // }
 
     if (occurrence >= stats_.min_occurrence) {
+      // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
+      //              "Leaving ProbeKeyType Warm\n";
+
       return KeyType::Warm();
     } else {
+      // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
+      //              "Leaving ProbeKeyType Cold\n";
+
       return KeyType::Cold();
     }
   }
@@ -276,13 +298,13 @@ class ZenFSOracle : public Oracle {
       if (occurrence < stats_.min_occurrence) {
         return;
       } else {
-        if (!key_set_.contains(key)) {
+        if (auto it = key_set_.find(key); it == key_set_.end()) {
           Evict();
         }
       }
     }
 
-    if (!key_set_.contains(key)) {
+    if (auto it = key_set_.find(key); it == key_set_.end()) {
       auto hint = std::make_shared<KeyHint>();
       hint->key = key;
       hint->local_version = global_version_;
@@ -292,25 +314,29 @@ class ZenFSOracle : public Oracle {
 
       double total = stats_.average_occurrence * key_set_.size() + occurrence;
       key_set_.insert(key, hint);
+      map_lock.lock();
       occurrence_map_[occurrence].insert(key);
+      map_lock.unlock();
 
       stats_.average_occurrence = total / key_set_.size();
     } else {
-      key_set_.update_fn(key, [&](std::shared_ptr<KeyHint>& value) {
-        value->local_version = global_version_;
+      auto pair = key_set_.find(key);
 
-        // change occurrence group
-        map_lock.lock();
-        auto arr = occurrence_map_.find(value->occurrence);
+      // key_set_.update_fn(key, [&](std::shared_ptr<KeyHint>& value) {
+      pair->second->local_version = global_version_;
 
-        // std::remove(arr->second.begin(), arr->second.end(), key);
-        arr->second.erase(key);
-        value->occurrence += occurrence;
-        occurrence_map_[value->occurrence].insert(key);
-        map_lock.unlock();
+      // change occurrence group
+      map_lock.lock();
+      auto arr = occurrence_map_.find(pair->second->occurrence);
 
-        value->hotness = ProbeKeyType(key, value->occurrence);
-      });
+      // std::remove(arr->second.begin(), arr->second.end(), key);
+      arr->second.erase(key);
+      pair->second->occurrence += occurrence;
+      occurrence_map_[pair->second->occurrence].insert(key);
+      map_lock.unlock();
+
+      pair->second->hotness = ProbeKeyType(key, pair->second->occurrence);
+      // });
 
       stats_.average_occurrence += (double)occurrence / key_set_.size();
     }
@@ -349,7 +375,7 @@ class ZenFSOracle : public Oracle {
       for (auto it = v.begin(); it != v.end();) {
         // not sure whether this is good
         auto hint = key_set_.find(*it);
-        if (global_version_ - hint->local_version >= 2) {
+        if (global_version_ - hint->second->local_version >= 2) {
           key_set_.erase(*it);
           it = v.erase(it);
           if (--wanted == 0) {
@@ -408,7 +434,8 @@ class ZenFSOracle : public Oracle {
   uint64_t limit_;
   double evict_rate_;
 
-  libcuckoo::cuckoohash_map<std::string, std::shared_ptr<KeyHint>> key_set_;
+  // libcuckoo::cuckoohash_map<std::string, std::shared_ptr<KeyHint>> key_set_;
+  folly::ConcurrentHashMap<std::string, std::shared_ptr<KeyHint>> key_set_;
 
   std::mutex map_lock;
   std::map<uint64_t, std::unordered_set<std::string>> occurrence_map_;

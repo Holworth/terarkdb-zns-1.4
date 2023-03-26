@@ -92,9 +92,9 @@ enum class DBFileType {
 // cold zones) to the DB
 enum GenericHotness : uint64_t {
   NoType = 0,
-  Hot = (1ULL << 31),
-  Warm = (2ULL << 31),
-  Cold = (3ULL << 31),
+  Hot = (1ULL << 32),
+  Warm = (2ULL << 32),
+  Cold = (3ULL << 32),
 };
 
 // ZNS: This type is used to determine the type of a specific key. It can also
@@ -116,16 +116,18 @@ struct KeyType {
   static KeyType Warm() { return KeyType(GenericHotness::Warm); }
   static KeyType Cold() { return KeyType(GenericHotness::Cold); }
   static KeyType Partition(uint32_t partition_id) {
-    return KeyType((4ULL << 31) | partition_id);
+    return KeyType((4ULL << 32) | partition_id);
   }
 
   bool IsHot() const { return code == GenericHotness::Hot; }
   bool IsWarm() const { return code == GenericHotness::Warm; }
   bool IsCold() const { return code == GenericHotness::Cold; }
-  bool IsPartition() const { return code >> 31 == 4ULL; }
+  bool IsPartition() const { return code >> 32 == 4ULL; }
   bool IsNoType() const { return code == GenericHotness::NoType; }
   uint32_t PartitionId() const { return (uint32_t)code; }
-  bool Valid() const { return code != GenericHotness::NoType; }
+  bool Valid() const {
+    return IsHot() || IsWarm() || IsCold() || IsPartition();
+  }
 
   // For Debug
   std::string ToString() const {
