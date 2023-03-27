@@ -91,6 +91,10 @@ class IOStatus : public Status {
     return IOStatus(kCorruption, msg);
   }
 
+  static IOStatus AsyncError(const Slice& msg, const Slice& msg2 = Slice()) {
+    return IOStatus(kAsyncError, msg, msg2);
+  }
+
   static IOStatus InvalidArgument(const Slice& msg,
                                   const Slice& msg2 = Slice()) {
     return IOStatus(kInvalidArgument, msg, msg2);

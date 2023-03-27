@@ -54,7 +54,7 @@ class FileMap {
           children() {
       // We reserve the space for children to prevent concurrent error
       // We hope 16 is enough for our case
-      children.reserve(16);
+      children.reserve(32);
     }
 
     bool IsLeaf() const { return children.size() == 0; }

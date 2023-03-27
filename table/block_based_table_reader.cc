@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "db/dbformat.h"
+#include "fs/log.h"
 #include "monitoring/perf_context_imp.h"
 #include "rocksdb/cache.h"
 #include "rocksdb/comparator.h"
@@ -2219,6 +2220,20 @@ void BlockBasedTableIteratorBase<TBlockIter, TValue>::Prev() {
 template <class TBlockIter, typename TValue>
 void BlockBasedTableIteratorBase<TBlockIter, TValue>::InitDataBlock() {
   BlockHandle data_block_handle = index_iter_->value();
+  BlockHandle next_data_block_handle = BlockHandle::NullBlockHandle();
+  if (read_options_.open_for_gc && prefetch_async) {
+    // Get the next block handle for prefetching. Remember to move back
+    // to the previous location after triving the handle of next data
+    // block.
+    index_iter_->Next();
+    if (index_iter_->Valid()) {
+      next_data_block_handle = index_iter_->value();
+    }
+    index_iter_->Prev();
+    assert(index_iter_->Valid() &&
+           data_block_handle.Equal(index_iter_->value()));
+  }
+
   if (!block_iter_points_to_real_block_ ||
       data_block_handle.offset() != prev_index_value_.offset() ||
       // if previous attempt of reading the block missed cache, try again
@@ -2263,6 +2278,14 @@ void BlockBasedTableIteratorBase<TBlockIter, TValue>::InitDataBlock() {
         key_includes_seq_, index_key_is_full_,
         /* get_context */ nullptr, s, prefetch_buffer_.get());
     block_iter_points_to_real_block_ = true;
+
+    if (read_options_.open_for_gc && prefetch_async) {
+      auto fetch_sz = next_data_block_handle.size() + kBlockTrailerSize;
+      ZnsLog(kMagenta,
+             "BlockBasedInterator::Prefetch next datablock (%llu, %llu)",
+             next_data_block_handle.offset(), fetch_sz);
+      rep->file->PrefetchAsync(next_data_block_handle.offset(), fetch_sz);
+    }
   }
 }
 
@@ -2444,8 +2467,8 @@ Status BlockBasedTable::Get(const ReadOptions& read_options, const Slice& key,
     for (iiter->Seek(key); iiter->Valid() && !done; iiter->Next()) {
       BlockHandle handle = iiter->value();
 
-      // The target key does not exist in this data block according to the 
-      // filter block information, so simply jump it. 
+      // The target key does not exist in this data block according to the
+      // filter block information, so simply jump it.
       bool not_exist_in_filter =
           filter != nullptr && filter->IsBlockBased() == true &&
           !filter->KeyMayMatch(ExtractUserKey(key), prefix_extractor,

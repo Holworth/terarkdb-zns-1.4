@@ -86,6 +86,7 @@ enum class DBFileType {
   kFlushFile = 2,
   kCompactionOutputFile = 3,
   kManifest = 4,
+  kTempFile = 5,
 };
 
 // ZNS: we need this for ZenFS to pass GC selection (hot zones, paritions or
@@ -852,6 +853,10 @@ class RandomAccessFile {
 
   // Readahead the file starting from offset by n bytes for caching.
   virtual Status Prefetch(uint64_t /*offset*/, size_t /*n*/) {
+    return Status::OK();
+  }
+
+  virtual Status PrefetchAsync(uint64_t /*offset*/, size_t /*n*/) {
     return Status::OK();
   }
 

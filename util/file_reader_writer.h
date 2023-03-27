@@ -117,6 +117,10 @@ class RandomAccessFileReader {
     return file_->Prefetch(offset, n);
   }
 
+  Status PrefetchAsync(uint64_t offset, size_t n) const {
+    return file_->PrefetchAsync(offset, n);
+  }
+
   RandomAccessFile* file() { return file_.get(); }
 
   const std::string& file_name() const { return file_name_; }

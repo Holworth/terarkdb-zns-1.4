@@ -3344,7 +3344,7 @@ Status VersionSet::ProcessManifestWrites(std::deque<ManifestWriter>& writers,
       auto opt_for_manifest = opt_env_opts;
       opt_for_manifest.db_file_type = DBFileType::kManifest;
       s = NewWritableFile(env_, descriptor_fname, &descriptor_file,
-                          opt_env_opts);
+                          opt_for_manifest);
       if (s.ok()) {
         descriptor_file->SetPreallocationBlockSize(
             db_options_->manifest_preallocation_size);
@@ -4743,6 +4743,9 @@ InternalIterator* VersionSet::MakeInputIterator(
   // (a) concurrent compactions,
   // (b) CompactionFilter::Decision::kRemoveAndSkipUntil.
   read_options.total_order_seek = true;
+  if (c->compaction_type() == kZNSGarbageCollection) {
+    read_options.open_for_gc = true;
+  }
 
   // Level-0 files have to be merged together.  For other levels,
   // we will make a concatenating iterator per level.

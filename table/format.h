@@ -67,6 +67,10 @@ class BlockHandle {
 
   static const BlockHandle& NullBlockHandle() { return kNullBlockHandle; }
 
+  bool Equal(const BlockHandle& r) {
+    return offset_ == r.offset() && size_ == r.size();
+  }
+
   // Maximum encoding length of a BlockHandle
   enum { kMaxEncodedLength = 10 + 10 };
 

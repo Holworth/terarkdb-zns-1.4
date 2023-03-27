@@ -29,6 +29,7 @@
 #include "table/block_based_table_factory.h"
 #include "table/filter_block.h"
 #include "table/format.h"
+#include "table/internal_iterator.h"
 #include "table/persistent_cache_helper.h"
 #include "table/table_properties_internal.h"
 #include "table/table_reader.h"
@@ -545,6 +546,9 @@ struct BlockBasedTable::Rep {
 
 template <class TBlockIter, typename TValue = LazyBuffer>
 class BlockBasedTableIteratorBase : public InternalIteratorBase<TValue> {
+  // A flag to determine if prefetch the next data block during a garbage
+  // collection task. We temporarily use a static member for configuration. 
+  static constexpr bool prefetch_async = false;
  public:
   BlockBasedTableIteratorBase(BlockBasedTable* table,
                               const ReadOptions& read_options,

@@ -68,6 +68,11 @@ class ZenfsRandomAccessFile : public RandomAccessFile {
   Status Prefetch(uint64_t offset, size_t n) override {
     return target_->Prefetch(offset, n, IOOptions(), nullptr);
   }
+
+  Status PrefetchAsync(uint64_t offset, size_t n) override {
+    return target_->PrefetchAsync(offset, n, IOOptions(), nullptr);
+  }
+
   size_t GetUniqueId(char* id, size_t max_size) const override {
     return target_->GetUniqueId(id, max_size);
   }
@@ -568,6 +573,9 @@ class ZenfsEnv : public EnvWrapper {
           foptions.io_options.type = IOType::kManifest;
           ZnsLog(kRed, "NewManifest: %s", f.c_str());
           break;
+        case DBFileType::kTempFile:
+          foptions.io_options.type = IOType::kTempFile;
+          ZnsLog(kRed, "New temp file: %s", f.c_str());
         default:
           break;
       }

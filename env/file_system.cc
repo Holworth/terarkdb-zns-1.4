@@ -7,6 +7,7 @@
 #include "rocksdb/file_system.h"
 
 #include "options/db_options.h"
+#include "rocksdb/env.h"
 #include "rocksdb/terark_namespace.h"
 #include "rocksdb/utilities/object_registry.h"
 
@@ -93,10 +94,13 @@ FileOptions FileSystem::OptimizeForBlobFileRead(
   return optimized_file_options;
 }
 
+// checked that this function is only used to write string to .dbtmp files
+// so we can set the db_file_type here safely
 IOStatus WriteStringToFile(FileSystem* fs, const Slice& data,
                            const std::string& fname, bool should_sync) {
   std::unique_ptr<FSWritableFile> file;
   EnvOptions soptions;
+  soptions.db_file_type = DBFileType::kTempFile;
   IOStatus s = fs->NewWritableFile(fname, soptions, &file, nullptr);
   if (!s.ok()) {
     return s;

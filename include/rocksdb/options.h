@@ -1273,6 +1273,9 @@ struct ReadOptions {
   // Default: 0 (don't filter by seqnum, return user keys)
   SequenceNumber iter_start_seqnum;
 
+  // Used to initialize an iterator for garbage collection usage. 
+  bool open_for_gc = false;
+
   ReadOptions();
   ReadOptions(bool cksum, bool cache);
 };

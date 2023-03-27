@@ -70,6 +70,7 @@ class Status {
     kTryAgain = 13,
     kCompactionTooLarge = 14,
     kColumnFamilyDropped = 15,
+    kAsyncError = 16,
     kMaxCode
   };
 

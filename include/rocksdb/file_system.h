@@ -36,6 +36,7 @@
 #include "rocksdb/table.h"
 #include "rocksdb/table_properties.h"
 #include "rocksdb/thread_status.h"
+#include "util/filename.h"
 
 namespace TERARKDB_NAMESPACE {
 
@@ -83,9 +84,10 @@ enum class IOType : uint8_t {
   kManifest,
   kLog,
   kUnknown,
-  kInvalid,
   kFlushFile,
   kCompactionOutputFile,
+  kTempFile,
+  kInvalid,
 };
 
 // Per-request options that can be passed down to the FileSystem
@@ -232,19 +234,15 @@ class FileSystem {
   //
   // Return value is a vector of file numbers indicating files to be
   // garbage collected and a hotness tag
-  // 
+  //
   // The input @out_args is used for users to offer user-defined
   // information from the FS to the DB.
-  virtual std::pair<std::unordered_set<uint64_t>, HotnessType>
-  GetGCHintsFromFS(void *out_args) = 0;
+  virtual std::pair<std::unordered_set<uint64_t>, HotnessType> GetGCHintsFromFS(
+      void* out_args) = 0;
 
-  virtual std::shared_ptr<Env::FSGCHints> GetFSGCHints() {
-    return nullptr;
-  }
+  virtual std::shared_ptr<Env::FSGCHints> GetFSGCHints() { return nullptr; }
 
-  virtual void NotifyGarbageCollectionFinish(const Compaction* c) {
-    return;
-  }
+  virtual void NotifyGarbageCollectionFinish(const Compaction* c) { return; }
 
   // Handles the event when a new DB or a new ColumnFamily starts using the
   // specified data paths.
@@ -634,10 +632,10 @@ class FileSystem {
   //
   virtual void UpdateTableProperties(const std::string& fname,
                                      const TableProperties* tbl_prop){};
-  
+
   //
   // (ZNS):
-  // The upper layer DB calls for release the resource of GC write zone of a 
+  // The upper layer DB calls for release the resource of GC write zone of a
   // specific partition
   virtual void MaybeReleaseGCWriteZone(HotnessType type) {}
 
@@ -736,6 +734,12 @@ class FSRandomAccessFile {
                             const IOOptions& /*options*/,
                             IODebugContext* /*dbg*/) {
     return IOStatus::NotSupported("Prefetch");
+  }
+
+  virtual IOStatus PrefetchAsync(uint64_t /*offset*/, size_t /*n*/,
+                            const IOOptions& /*options*/,
+                            IODebugContext* /*dbg*/) {
+    return IOStatus::NotSupported("PrefetchAsync");
   }
 
   // Read a bunch of blocks as described by reqs. The blocks can
@@ -1195,8 +1199,8 @@ class FileSystemWrapper : public FileSystem {
 
   void Dump() override { target_->Dump(); }
 
-  std::pair<std::unordered_set<uint64_t>, HotnessType> 
-  GetGCHintsFromFS(void *out_args) override {
+  std::pair<std::unordered_set<uint64_t>, HotnessType> GetGCHintsFromFS(
+      void* out_args) override {
     return target_->GetGCHintsFromFS(out_args);
   }
 
