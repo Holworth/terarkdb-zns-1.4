@@ -564,12 +564,18 @@ class ZenfsEnv : public EnvWrapper {
         case DBFileType::kWAL:
           foptions.io_options.type = IOType::kWAL;
           break;
+        case DBFileType::kManifest:
+          foptions.io_options.type = IOType::kManifest;
+          ZnsLog(kRed, "NewManifest: %s", f.c_str());
+          break;
         default:
           break;
       }
     }
 
-    // (xzw): the file here now contains a valid level
+    // TODO: Deal with MANIFEST file specially within the
+    // FileSystem::NewWritableFile call.
+
     IOStatus s = fs_->NewWritableFile(f, foptions, &file, nullptr);
     if (s.ok()) {
       r->reset(new ZenfsWritableFile(std::move(file)));

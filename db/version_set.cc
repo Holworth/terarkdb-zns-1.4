@@ -3290,8 +3290,6 @@ Status VersionSet::ProcessManifestWrites(std::deque<ManifestWriter>& writers,
 
   {
     EnvOptions opt_env_opts = env_->OptimizeForManifestWrite(env_options_);
-    // (kqh): Specify that this is a manifest file
-    opt_env_opts.db_file_type = DBFileType::kManifest;
     mu->Unlock();
 
     if (!first_writer.edit_list.front()->IsColumnFamilyManipulation()) {
@@ -3342,6 +3340,9 @@ Status VersionSet::ProcessManifestWrites(std::deque<ManifestWriter>& writers,
       std::string descriptor_fname =
           DescriptorFileName(dbname_, pending_manifest_file_number_);
       std::unique_ptr<WritableFile> descriptor_file;
+      // Set the file type to be Manifest as a hint passed to ZenFS
+      auto opt_for_manifest = opt_env_opts;
+      opt_for_manifest.db_file_type = DBFileType::kManifest;
       s = NewWritableFile(env_, descriptor_fname, &descriptor_file,
                           opt_env_opts);
       if (s.ok()) {

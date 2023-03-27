@@ -2479,7 +2479,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
 
   // The database notify the ZenFS there might be a chance to release the 
   // GCWriteZone one specific partition holds
-  // env_->MaybeReleaseGCWriteZone(sub_compact->compaction->hotness_type());
+  env_->MaybeReleaseGCWriteZone(sub_compact->compaction->hotness_type());
 
   // Report the stats
   stats_->measureTime(ZNS_PARTITION_GC_GET_KEY, time_counter.get_key);

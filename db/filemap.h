@@ -1,11 +1,12 @@
 #pragma once
+#include <folly/concurrency/ConcurrentHashMap.h>
+
 #include <cstdint>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <unordered_map>
 #include <vector>
-#include <folly/concurrency/ConcurrentHashMap.h>
 
 #include "db/dbformat.h"
 #include "db/version_edit.h"
@@ -50,7 +51,11 @@ class FileMap {
           fd(_file_meta->fd),
           smallest_key(_file_meta->smallest),
           largest_key(_file_meta->largest),
-          children() {}
+          children() {
+      // We reserve the space for children to prevent concurrent error
+      // We hope 16 is enough for our case
+      children.reserve(16);
+    }
 
     bool IsLeaf() const { return children.size() == 0; }
     bool Accessible(uint64_t version) const { return version_num <= version; }
