@@ -2225,11 +2225,19 @@ void BlockBasedTableIteratorBase<TBlockIter, TValue>::InitDataBlock() {
     // Get the next block handle for prefetching. Remember to move back
     // to the previous location after triving the handle of next data
     // block.
+    auto prev_key = index_iter_->key();
+    // In case that moving index_iter_ causes prev_key invalid
+    auto prev_key_str = std::string(prev_key.data(), prev_key.size());
     index_iter_->Next();
     if (index_iter_->Valid()) {
       next_data_block_handle = index_iter_->value();
+      index_iter_->Prev();
+    } else {
+      // index_iter_->Valid() = false means this iterator has reached the
+      // end, calling Prev() will abort. The only way to get back is seeking
+      // to the last key
+      index_iter_->Seek(prev_key_str);
     }
-    index_iter_->Prev();
     assert(index_iter_->Valid() &&
            data_block_handle.Equal(index_iter_->value()));
   }
@@ -2279,7 +2287,8 @@ void BlockBasedTableIteratorBase<TBlockIter, TValue>::InitDataBlock() {
         /* get_context */ nullptr, s, prefetch_buffer_.get());
     block_iter_points_to_real_block_ = true;
 
-    if (read_options_.open_for_gc && prefetch_async) {
+    if (read_options_.open_for_gc && prefetch_async &&
+        !next_data_block_handle.IsNull()) {
       auto fetch_sz = next_data_block_handle.size() + kBlockTrailerSize;
       ZnsLog(kMagenta,
              "BlockBasedInterator::Prefetch next datablock (%llu, %llu)",

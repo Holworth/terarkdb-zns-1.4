@@ -225,6 +225,7 @@ class Oracle {
   virtual KeyType ProbeKeyType(const std::string& key, uint64_t occrrence) = 0;
   virtual void AddKey(const std::string& key, uint64_t occurrence) = 0;
   virtual void UpdateStats() = 0;
+  virtual void ReportProbeStats() = 0;
 };
 
 class Env {

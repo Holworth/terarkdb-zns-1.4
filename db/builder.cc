@@ -1029,6 +1029,7 @@ Status BuildPartitionTable(
       // to cache it here for further user reads
       ReadOptions ro;
       ro.fill_cache = false;
+      // Is this necessary?
       for (auto& meta : *meta_vec) {
         std::unique_ptr<InternalIterator> it(table_cache->NewIterator(
             ro, env_options, meta, empty_dependence_map,
@@ -1062,6 +1063,7 @@ Status BuildPartitionTable(
 
   ioptions.statistics->measureTime(ZNS_BUILD_PARTITION_TABLE_PROBE,
                                    counter.probe_key_type_total_time);
+  // env->GetOracle()->ReportProbeStats();
   ZnsLog(kCyan,
          "[BuildPartitionTable][Output: %lu][Separate Hot: %lu "
          "(%.2lf)][Separate Warm: %lu (%.2lf)]",

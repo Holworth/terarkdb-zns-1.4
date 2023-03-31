@@ -4743,7 +4743,7 @@ InternalIterator* VersionSet::MakeInputIterator(
   // (a) concurrent compactions,
   // (b) CompactionFilter::Decision::kRemoveAndSkipUntil.
   read_options.total_order_seek = true;
-  if (c->compaction_type() == kZNSGarbageCollection) {
+  if (c->compaction_type() == kGarbageCollection) {
     read_options.open_for_gc = true;
   }
 

@@ -359,6 +359,21 @@ enum Histograms : uint32_t {
   // Time spent on ProcessZNSHotPartitionGarbageCollection
   ZNS_PROCESS_HOT_GC,
 
+  // The total time spent on MergingIterator::Next() during a HOT GC task
+  ZNS_HOT_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
+
+  // The total time spent on output file during a HOT GC task
+  ZNS_HOT_GC_WRITE_TOTAL_MICROS,
+
+  // Time spent on garbage collection of warm zone
+  ZNS_PROCESS_WARM_GC,
+
+  // The total time spent on MergingIterator::Next() during a WARM GC task
+  ZNS_WARM_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
+
+  // The total time spent on output file during a WARM GC task
+  ZNS_WARM_GC_WRITE_TOTAL_MICROS,
+
   HISTOGRAM_ENUM_MAX,
 };
 

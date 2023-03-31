@@ -214,10 +214,12 @@ class ZenFSOracle : public Oracle {
       sorted[i.second].push_back(&i.first);
     }
     // evict_rate_ * update.size() is a very huge number. We set a hard-limit
-    // 300 for the number of keys to process
+    // for the number of keys to process
     auto check_key_cnt = std::min(update.size() * evict_rate_, 1000.0);
     auto high_occurrence = sorted.rbegin();
     for (int i = 0; i < check_key_cnt && high_occurrence != sorted.rend();) {
+      // ZnsLog(kYellow, "Process keys with occurrrence of %lu",
+      //        high_occurrence->first);
       for (auto& k : high_occurrence->second) {
         AddKey(*k, high_occurrence->first);
         if ((++i) >= check_key_cnt) {
@@ -227,6 +229,13 @@ class ZenFSOracle : public Oracle {
       ++high_occurrence;
     }
 
+    UpdateStats();
+
+    // ZnsLog(kYellow,
+    //        "After merging keys, low occ: %lu, high occ: %lu, avg occ: %lf",
+    //        stats_.min_occurrence, stats_.max_occurrence,
+    //        stats_.average_occurrence);
+    // merged_ = true;
     // std::vector<std::pair<Slice, uint64_t>> sorted;
     // for (const auto& i : update) {
     //   const auto& s = i.first;
@@ -258,19 +267,13 @@ class ZenFSOracle : public Oracle {
     // Defer d([]() { ZnsLog(kYellow, "ZenFSOracle::ProbeKeyType::End"); });
     // std::shared_ptr<KeyHint> hint;
     if (auto it = key_set_.find(key); it != key_set_.end()) {
-      // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
-      //              "entering ProbeKeyType if\n";
-      if (it->second->hotness.IsHot() || it->second->hotness.IsWarm()) {
-        ++total_probed_hot_or_warm;
-        // std::cout
-        //     <<
-        //     ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-        //        ">>>>>>>>>>>>>>> Accumulated Total probed hot(warm) keys "
-        //     << total_probed_hot_or_warm << "\n";
+      if (it->second->hotness.IsHot() && occurrence == 0) {
+        ++probed_hot_in_flush;
+      } else if (it->second->hotness.IsWarm() && occurrence == 0) {
+        ++probed_warm_in_flush;
       }
-      // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
-      //              "Leaving ProbeKeyType if\n";
 
+      ++total_probed_hot_or_warm;
       return it->second->hotness;
     }
 
@@ -281,9 +284,15 @@ class ZenFSOracle : public Oracle {
       return KeyType::Hot();
     }
 
-    // if (limit_ < key_set_.size()) {
-    // return KeyHotnessType::Warm;
-    // }
+    if (key_set_.size() < limit_) {
+      if (occurrence != 0) {
+        return KeyType::Warm();
+      } else {
+        // this is a probe from flush, we consider it cold
+        ++probed_cold_in_flush;
+        return KeyType::Cold();
+      }
+    }
 
     if (occurrence >= stats_.min_occurrence) {
       // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
@@ -317,13 +326,10 @@ class ZenFSOracle : public Oracle {
 
       hint->hotness = ProbeKeyType(key, occurrence);
 
-      double total = stats_.average_occurrence * key_set_.size() + occurrence;
       key_set_.insert(key, hint);
       map_lock.lock();
       occurrence_map_[occurrence].insert(key);
       map_lock.unlock();
-
-      stats_.average_occurrence = total / key_set_.size();
     } else {
       auto pair = key_set_.find(key);
 
@@ -342,13 +348,7 @@ class ZenFSOracle : public Oracle {
 
       pair->second->hotness = ProbeKeyType(key, pair->second->occurrence);
       // });
-
-      stats_.average_occurrence += (double)occurrence / key_set_.size();
     }
-
-    stats_.max_occurrence = occurrence_map_.rbegin()->first;
-    stats_.min_occurrence = occurrence_map_.begin()->first;
-
     return;
   }
 
@@ -409,6 +409,33 @@ class ZenFSOracle : public Oracle {
     UpdateStats();
   }
 
+  void ReportProbeStats() override {
+    if (merged_) {
+      // for the convenience of debugging and breakpointing
+      ZnsLog(kYellow, "Reporting current probed stats and clear them");
+      ZnsLog(kYellow, "Hot probes %lu, warm probes %lu, cold probes %lu",
+             probed_hot_in_flush.load(), probed_warm_in_flush.load(),
+             probed_cold_in_flush.load());
+      probed_hot_in_flush = probed_warm_in_flush = probed_cold_in_flush = 0;
+
+      ZnsLog(kYellow, "Summarize hot set status: ");
+
+      size_t hot = 0, warm = 0, cold = 0;
+      for (const auto& it : key_set_) {
+        if (it.second->IsHot()) {
+          ++hot;
+        } else if (it.second->IsWarm()) {
+          ++warm;
+        } else {
+          ++cold;
+        }
+      }
+
+      ZnsLog(kYellow, "hot keys: %lu, warm keys %lu, cold keys %lu", hot, warm,
+             cold);
+    }
+  }
+
  private:
   struct KeyHint {
     std::string key;
@@ -446,6 +473,10 @@ class ZenFSOracle : public Oracle {
   std::map<uint64_t, std::unordered_set<std::string>> occurrence_map_;
 
   std::atomic_uint64_t total_probed_hot_or_warm = 0;
+  std::atomic_uint64_t probed_hot_in_flush = 0;
+  std::atomic_uint64_t probed_warm_in_flush = 0;
+  std::atomic_uint64_t probed_cold_in_flush = 0;
+  std::atomic_bool merged_ = false;
 
   void Evict() {
     auto wanted = evict_rate_ * limit_;

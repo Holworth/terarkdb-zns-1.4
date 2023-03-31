@@ -2296,10 +2296,12 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
       SequenceNumber seq = kMaxSequenceNumber;
       LazyBuffer value;
 
-      auto start = env_->NowMicros();
-      input_version->GetKey(ikey.user_key, iter_key.GetInternalKey(), &s, &type,
-                            &seq, &value, *blob_meta);
-      time_counter.get_key += (env_->NowMicros() - start);
+      {
+        auto start = env_->NowMicros();
+        input_version->GetKey(ikey.user_key, iter_key.GetInternalKey(), &s,
+                              &type, &seq, &value, *blob_meta);
+        time_counter.get_key += (env_->NowMicros() - start);
+      }
 
       if (s.IsNotFound()) {
         ++counter.get_not_found;
@@ -2477,7 +2479,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     env_->GetOracle()->MergeKeys(occurrence_map);
   }
 
-  // The database notify the ZenFS there might be a chance to release the 
+  // The database notify the ZenFS there might be a chance to release the
   // GCWriteZone one specific partition holds
   env_->MaybeReleaseGCWriteZone(sub_compact->compaction->hotness_type());
 
@@ -2489,9 +2491,32 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
                       time_counter.gc_write);
 }
 
+// TODO: Add a flag to control if validaty-checking is enabled, which might 
+// save time for warm-hot partition GC
 Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
     SubcompactionState* sub_compact, ColumnFamilyData* cfd,
     std::unique_ptr<InternalIterator> input) {
+  // Set the monitoring type accordingly
+  auto monitor_type = sub_compact->compaction->hotness_type().IsHot()
+                          ? ZNS_PROCESS_HOT_GC
+                          : ZNS_PROCESS_WARM_GC;
+  StopWatch sw(env_, stats_, monitor_type);
+
+  // I/O measurement variables
+  PerfLevel prev_perf_level = PerfLevel::kEnableTime;
+  uint64_t prev_write_nanos = 0;
+  uint64_t prev_fsync_nanos = 0;
+  uint64_t prev_range_sync_nanos = 0;
+  uint64_t prev_prepare_write_nanos = 0;
+  if (measure_io_stats_) {
+    prev_perf_level = GetPerfLevel();
+    SetPerfLevel(PerfLevel::kEnableTime);
+    prev_write_nanos = IOSTATS(write_nanos);
+    prev_fsync_nanos = IOSTATS(fsync_nanos);
+    prev_range_sync_nanos = IOSTATS(range_sync_nanos);
+    prev_prepare_write_nanos = IOSTATS(prepare_write_nanos);
+  }
+
   input->SeekToFirst();
 
   std::unordered_map<std::string, uint64_t> occurrence_map;
@@ -2531,6 +2556,7 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
   uint64_t last_file_number = uint64_t(-1);
   IterKey iter_key;
   ParsedInternalKey ikey;
+
   struct {
     uint64_t input = 0;
     uint64_t garbage_type = 0;
@@ -2538,6 +2564,16 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
     uint64_t file_number_mismatch = 0;
     uint64_t output_record = 0;
   } counter;
+
+  struct {
+    // The total time spent on merging_iterator_next
+    uint64_t merging_iterator_next = 0;
+    // The total time spent on GetKey()
+    uint64_t get_key = 0;
+    // The total time spent on GC output
+    uint64_t gc_write = 0;
+  } time_counter;
+
   std::vector<std::pair<uint64_t, FileMetaData*>> blob_meta_cache;
   assert(!sub_compact->compaction->inputs()->empty());
   blob_meta_cache.reserve(sub_compact->compaction->inputs()->front().size());
@@ -2618,8 +2654,12 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
       ValueType type = kTypeDeletion;
       SequenceNumber seq = kMaxSequenceNumber;
       LazyBuffer value;
-      input_version->GetKey(ikey.user_key, iter_key.GetInternalKey(), &s, &type,
-                            &seq, &value, *blob_meta);
+      {
+        auto start = env_->NowMicros();
+        input_version->GetKey(ikey.user_key, iter_key.GetInternalKey(), &s,
+                              &type, &seq, &value, *blob_meta);
+        time_counter.get_key += (env_->NowMicros() - start);
+      }
       if (s.IsNotFound()) {
         ++counter.get_not_found;
         break;
@@ -2658,7 +2698,11 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
 
       assert(sub_compact->blob_builder != nullptr);
       assert(sub_compact->current_blob_output() != nullptr);
-      status = sub_compact->blob_builder->Add(curr_key, value);
+      {
+        auto start = env_->NowMicros();
+        status = sub_compact->blob_builder->Add(curr_key, value);
+        time_counter.gc_write += (env_->NowMicros() - start);
+      }
       ++counter.output_record;
       if (!status.ok()) {
         break;
@@ -2695,7 +2739,11 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
 
       // looking forward once to check whether we really need to open a new
       // blob file
-      input->Next();
+      {
+        auto start = env_->NowMicros();
+        input->Next();
+        time_counter.merging_iterator_next += (env_->NowMicros() - start);
+      }
       if (!input->Valid()) {
         break;
       }
@@ -2704,7 +2752,11 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
         return status;
       }
     }
-    input->Next();
+    {
+      auto start = env_->NowMicros();
+      input->Next();
+      time_counter.merging_iterator_next += (env_->NowMicros() - start);
+    }
     if (!input->Valid()) {
       break;
     }
@@ -2713,6 +2765,7 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
   auto s = safe_blob_closer();
   if (status.ok()) {
     status = s;
+    StopWatch sw(env_, stats_, ZNS_ORACLE_MERGEKEYS);
     env_->GetOracle()->MergeKeys(occurrence_map);
   }
 
@@ -2763,6 +2816,30 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
       env_->DeleteFile(fname);
       sub_compact->blob_outputs.clear();
     }
+  }
+
+  if (measure_io_stats_) {
+    sub_compact->compaction_job_stats.file_write_nanos +=
+        IOSTATS(write_nanos) - prev_write_nanos;
+    sub_compact->compaction_job_stats.file_fsync_nanos +=
+        IOSTATS(fsync_nanos) - prev_fsync_nanos;
+    sub_compact->compaction_job_stats.file_range_sync_nanos +=
+        IOSTATS(range_sync_nanos) - prev_range_sync_nanos;
+    sub_compact->compaction_job_stats.file_prepare_write_nanos +=
+        IOSTATS(prepare_write_nanos) - prev_prepare_write_nanos;
+    if (prev_perf_level != PerfLevel::kEnableTime) {
+      SetPerfLevel(prev_perf_level);
+    }
+  }
+
+  if (sub_compact->compaction->hotness_type().IsHot()) {
+    stats_->measureTime(ZNS_HOT_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
+                        time_counter.merging_iterator_next);
+    stats_->measureTime(ZNS_HOT_GC_WRITE_TOTAL_MICROS, time_counter.gc_write);
+  } else if (sub_compact->compaction->hotness_type().IsWarm()) {
+    stats_->measureTime(ZNS_WARM_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
+                        time_counter.merging_iterator_next);
+    stats_->measureTime(ZNS_WARM_GC_WRITE_TOTAL_MICROS, time_counter.gc_write);
   }
 
   return status;
