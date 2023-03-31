@@ -1559,7 +1559,7 @@ void CompactionJob::ProcessCompaction(SubcompactionState* sub_compact) {
           sub_c_type == kZNSWarmGarbageCollection ||
           sub_c_type == kZNSColdGarbageCollection ||
           sub_c_type == kZNSPartitionGarbageCollection) {
-        ProcessZNSGarbageCollection(sub_compact);
+        ProcessZNSGarbageCollection(sub_compact, false);
       } else {
         ProcessGarbageCollection(sub_compact);
       }
@@ -2491,7 +2491,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
                       time_counter.gc_write);
 }
 
-// TODO: Add a flag to control if validaty-checking is enabled, which might 
+// TODO: Add a flag to control if validaty-checking is enabled, which might
 // save time for warm-hot partition GC
 Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
     SubcompactionState* sub_compact, ColumnFamilyData* cfd,
@@ -2758,6 +2758,399 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollection(
       time_counter.merging_iterator_next += (env_->NowMicros() - start);
     }
     if (!input->Valid()) {
+      break;
+    }
+  }
+
+  auto s = safe_blob_closer();
+  if (status.ok()) {
+    status = s;
+    StopWatch sw(env_, stats_, ZNS_ORACLE_MERGEKEYS);
+    env_->GetOracle()->MergeKeys(occurrence_map);
+  }
+
+  if (status.ok()) {
+    auto& meta = sub_compact->blob_outputs.front().meta;
+    auto& inputs = *sub_compact->compaction->inputs();
+    assert(inputs.size() == 1 && inputs.front().level == -1);
+    auto& files = inputs.front().files;
+    // ROCKS_LOG_INFO(
+    //     db_options_.info_log,
+    //     "[%s] [JOB %d] Table #%" PRIu64 " GC: %" PRIu64
+    //     " inputs from %zd files. %" PRIu64
+    //     " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
+    //     " get not found, %" PRIu64
+    //     " file number mismatch ], inheritance tree: %zd -> %zd",
+    //     cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
+    //     files.size(), counter.input - meta.prop.num_entries,
+    //     sub_compact->compaction->num_antiquation() * 100. / counter.input,
+    //     counter.garbage_type, counter.get_not_found,
+    //     counter.file_number_mismatch,
+    //     meta.prop.inheritance.size() + inheritance_tree_pruge_count,
+    //     meta.prop.inheritance.size());
+    ROCKS_LOG_INFO(
+        db_options_.info_log,
+        "[%s] [JOB %d] Table #%" PRIu64
+        "[ZNS GC][Type: %s][Inputs: %lu records]"
+        "[Inputs: %lu files][Outputs: %lu records][Drop: %lu records (%.2lf)]",
+        cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(),
+        sub_compact->compaction->hotness_type().ToString().c_str(),
+        counter.input, files.size(), counter.output_record,
+        (counter.input - counter.output_record),
+        1 - (double)counter.output_record / counter.input);
+
+    if ((std::find_if(files.begin(), files.end(),
+                      [](FileMetaData* f) {
+                        return f->marked_for_compaction;
+                      }) == files.end() &&
+         files.size() == 1 && counter.input == meta.prop.num_entries) ||
+        meta.prop.num_entries == 0) {
+      ROCKS_LOG_INFO(db_options_.info_log,
+                     "[%s] [JOB %d] Table #%" PRIu64
+                     " GC purge %s records, dropped",
+                     cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(),
+                     meta.prop.num_entries == 0 ? "whole" : "0");
+      std::string fname = TableFileName(
+          sub_compact->compaction->immutable_cf_options()->cf_paths,
+          meta.fd.GetNumber(), meta.fd.GetPathId());
+      env_->DeleteFile(fname);
+      sub_compact->blob_outputs.clear();
+    }
+  }
+
+  if (measure_io_stats_) {
+    sub_compact->compaction_job_stats.file_write_nanos +=
+        IOSTATS(write_nanos) - prev_write_nanos;
+    sub_compact->compaction_job_stats.file_fsync_nanos +=
+        IOSTATS(fsync_nanos) - prev_fsync_nanos;
+    sub_compact->compaction_job_stats.file_range_sync_nanos +=
+        IOSTATS(range_sync_nanos) - prev_range_sync_nanos;
+    sub_compact->compaction_job_stats.file_prepare_write_nanos +=
+        IOSTATS(prepare_write_nanos) - prev_prepare_write_nanos;
+    if (prev_perf_level != PerfLevel::kEnableTime) {
+      SetPerfLevel(prev_perf_level);
+    }
+  }
+
+  if (sub_compact->compaction->hotness_type().IsHot()) {
+    stats_->measureTime(ZNS_HOT_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
+                        time_counter.merging_iterator_next);
+    stats_->measureTime(ZNS_HOT_GC_WRITE_TOTAL_MICROS, time_counter.gc_write);
+  } else if (sub_compact->compaction->hotness_type().IsWarm()) {
+    stats_->measureTime(ZNS_WARM_GC_MERGING_ITERATOR_NEXT_TOTAL_MICROS,
+                        time_counter.merging_iterator_next);
+    stats_->measureTime(ZNS_WARM_GC_WRITE_TOTAL_MICROS, time_counter.gc_write);
+    stats_->measureTime(ZNS_WARM_GC_GET_KEY, time_counter.get_key);
+  }
+
+  return status;
+}
+
+Status CompactionJob::ProcessZNSNonPartitionGarbageCollectionWithNoLookback(
+    SubcompactionState* sub_compact, ColumnFamilyData* cfd,
+    std::unique_ptr<InternalIterator> input) {
+  // Set the monitoring type accordingly
+  auto monitor_type = sub_compact->compaction->hotness_type().IsHot()
+                          ? ZNS_PROCESS_HOT_GC
+                          : ZNS_PROCESS_WARM_GC;
+  StopWatch sw(env_, stats_, monitor_type);
+
+  // I/O measurement variables
+  PerfLevel prev_perf_level = PerfLevel::kEnableTime;
+  uint64_t prev_write_nanos = 0;
+  uint64_t prev_fsync_nanos = 0;
+  uint64_t prev_range_sync_nanos = 0;
+  uint64_t prev_prepare_write_nanos = 0;
+  if (measure_io_stats_) {
+    prev_perf_level = GetPerfLevel();
+    SetPerfLevel(PerfLevel::kEnableTime);
+    prev_write_nanos = IOSTATS(write_nanos);
+    prev_fsync_nanos = IOSTATS(fsync_nanos);
+    prev_range_sync_nanos = IOSTATS(range_sync_nanos);
+    prev_prepare_write_nanos = IOSTATS(prepare_write_nanos);
+  }
+
+  input->SeekToFirst();
+
+  std::unordered_map<std::string, uint64_t> occurrence_map;
+
+  Arena arena;
+  // std::unordered_map<Slice, uint64_t, SliceHasher> conflict_map;
+  // std::mutex conflict_map_mutex;
+  //
+  // auto create_iter = [&](Arena* /* arena */) {
+  //   return versions_->MakeInputIterator(sub_compact->compaction, nullptr,
+  //                                       env_options_for_read_);
+  // };
+  // auto filter_conflict = [&](const Slice& ikey, const LazyBuffer& value) {
+  //   std::lock_guard<std::mutex> lock(conflict_map_mutex);
+  //   auto find = conflict_map.find(ikey);
+  //   return find != conflict_map.end() && find->second != value.file_number();
+  // };
+  //
+  // LazyInternalIteratorWrapper second_pass_iter(
+  //     c_style_callback(create_iter), &create_iter,
+  //     c_style_callback(filter_conflict), &filter_conflict, nullptr /* arena
+  //     */, shutting_down_);
+  //
+  Status status = OpenCompactionOutputBlob(sub_compact);
+  if (!status.ok()) {
+    return status;
+  }
+  // sub_compact->blob_builder->SetSecondPassIterator(&second_pass_iter);
+
+  Version* input_version = sub_compact->compaction->input_version();
+  auto& dependence_map = input_version->storage_info()->dependence_map();
+  auto& dependence_multi_map =
+      input_version->storage_info()->dependence_multi_map();
+  auto version_number = input_version->GetVersionNumber();
+  auto& comp = cfd->internal_comparator();
+  std::string last_key;
+  uint64_t last_file_number = uint64_t(-1);
+  IterKey iter_key;
+  ParsedInternalKey ikey;
+
+  struct {
+    uint64_t input = 0;
+    uint64_t garbage_type = 0;
+    uint64_t get_not_found = 0;
+    uint64_t file_number_mismatch = 0;
+    uint64_t output_record = 0;
+  } counter;
+
+  struct {
+    // The total time spent on merging_iterator_next
+    uint64_t merging_iterator_next = 0;
+    // The total time spent on GetKey()
+    uint64_t get_key = 0;
+    // The total time spent on GC output
+    uint64_t gc_write = 0;
+  } time_counter;
+
+  std::vector<std::pair<uint64_t, FileMetaData*>> blob_meta_cache;
+  assert(!sub_compact->compaction->inputs()->empty());
+  blob_meta_cache.reserve(sub_compact->compaction->inputs()->front().size());
+  bool blob_closed = false;
+  size_t inheritance_tree_pruge_count = 0;
+
+  // a varaible used for debug, remember to remove it afterwards
+  std::vector<std::string> emulated_blob;
+
+  auto safe_blob_closer = [&]() {
+    if (sub_compact->blob_builder == nullptr) return Status::OK();
+    if (status.ok() &&
+        (shutting_down_->load(std::memory_order_relaxed) || cfd->IsDropped())) {
+      status = Status::ShutdownInProgress(
+          "Database shutdown or Column family drop during compaction");
+    }
+    if (status.ok()) {
+      status = input->status();
+    }
+    std::vector<uint64_t> inheritance_tree;
+
+    if (status.ok()) {
+      status = BuildInheritanceTree(
+          *sub_compact->compaction->inputs(), dependence_map, input_version,
+          &inheritance_tree, &inheritance_tree_pruge_count);
+    }
+
+    emulated_blob.clear();
+    return FinishCompactionOutputBlob(status, sub_compact, inheritance_tree);
+  };
+
+  std::string prev_user_key;
+  std::string prev_internal_key;
+  std::string current_user_key;
+  LazyBuffer prev_value;
+  Slice curr_slice;
+  Slice prev_slice;
+  PlacementFileType placement_type;
+  ParsedInternalKey parsed_prev_internal_key;
+
+  while (status.ok() && !cfd->IsDropped()) {
+    if (input->Valid()) {
+      ++counter.input;
+      curr_slice = input->key();
+
+      if (!ParseInternalKey(curr_slice, &ikey)) {
+        status = Status::Corruption(
+            "ProcessZNSGarbageCollection invalid InternalKey");
+        break;
+      }
+
+      current_user_key.assign(ikey.user_key.data(), ikey.user_key.size());
+      occurrence_map[current_user_key] += 1;
+
+      if (prev_user_key.empty()) {
+        prev_user_key = current_user_key;
+        prev_internal_key.assign(curr_slice.data(), curr_slice.size());
+        prev_value = input->value();
+        prev_value.pin();
+
+        // the slice inside parsed_prev_internal_key may be invalid
+        // use the prev_user_key to store the content
+        parsed_prev_internal_key.user_key = prev_user_key;
+        parsed_prev_internal_key.type = ikey.type;
+        parsed_prev_internal_key.sequence = ikey.sequence;
+      }
+
+      // encountering the same key, go ahead
+      // input->Valid() == false indicates that the iterator has
+      // gone beyond its context but the last prev_key hasn't
+      // been written to a blob file yet, so execute the following
+      // lines one more time
+      if (current_user_key == prev_user_key) {
+        input->Next();
+        continue;
+      }
+    }
+
+    // encountering a new key, we should put the prev_key to a suitable
+    // blob file and update prev_key and prev_value to the current key
+    // and value
+
+    uint64_t blob_file_number = prev_value.file_number();
+    FileMetaData* blob_meta;
+    auto find_cache = std::find_if(
+        blob_meta_cache.begin(), blob_meta_cache.end(),
+        [blob_file_number](const std::pair<uint64_t, FileMetaData*>& pair) {
+          return pair.first == blob_file_number;
+        });
+    if (find_cache != blob_meta_cache.end()) {
+      blob_meta = find_cache->second;
+    } else {
+      // auto find_dependence_map = dependence_map.find(blob_file_number);
+      auto fm_status = dependence_multi_map->QueryFileMeta(
+          blob_file_number, prev_user_key, &comp, version_number, &blob_meta);
+      // if (find_dependence_map == dependence_map.end()) {
+      //   status =
+      //       Status::Corruption("ProcessGarbageCollection internal error !");
+      //   break;
+      // }
+
+      if (!fm_status.ok()) {
+        status =
+            Status::Corruption("ProcessGarbageCollection internal error !");
+        break;
+      }
+
+      // blob_meta = find_dependence_map->second;
+      blob_meta_cache.emplace_back(blob_file_number, blob_meta);
+      assert(blob_meta->fd.GetNumber() == blob_file_number);
+    }
+    do {
+      if (parsed_prev_internal_key.type != kTypeValue &&
+          parsed_prev_internal_key.type != kTypeMerge) {
+        ++counter.garbage_type;
+        break;
+      }
+      // iter_key.SetInternalKey(ikey.user_key, ikey.sequence,
+      // kValueTypeForSeek);
+      // LazyBuffer value;
+      // value.assign(prev_value);
+
+      // uint64_t file_number = SeparateHelper::DecodeFileNumber(value.slice());
+      auto file_number = prev_value.file_number();
+      FileMetaData* find = nullptr;
+      auto fm_status = dependence_multi_map->QueryFileMeta(
+          file_number, prev_user_key, &comp, version_number, &find);
+      // auto find = dependence_map.find(file_number);
+      // if (find == dependence_map.end()) {
+      //   status = Status::Corruption("Separate value dependence missing");
+      //   break;
+      // }
+      if (!fm_status.ok()) {
+        status = Status::Corruption("Separate value dependence missing");
+        break;
+      }
+
+      // if (find->second->fd.GetNumber() != value.file_number()) {
+      if (find->fd.GetNumber() != prev_value.file_number()) {
+        ++counter.file_number_mismatch;
+        break;
+      }
+
+      assert(sub_compact->blob_builder != nullptr);
+      assert(sub_compact->current_blob_output() != nullptr);
+      {
+        auto start = env_->NowMicros();
+        prev_slice = prev_internal_key;
+
+        if (emulated_blob.size() > 0 &&
+            comp.Compare(prev_slice, Slice(emulated_blob.back())) <= 0) {
+          auto it = std::find_if(
+              emulated_blob.begin(), emulated_blob.end(), [&](std::string& a) {
+                return comp.Compare(prev_slice, Slice(a)) == 0;
+              });
+
+          if (it != emulated_blob.end()) {
+            ZnsLog(kYellow, "Duplicated key is found with distance being %lu",
+                   std::distance(it, emulated_blob.end()));
+            assert(false);
+          } else {
+            ZnsLog(kYellow, "Overlapping key is found");
+            assert(false);
+          }
+        }
+
+        status = sub_compact->blob_builder->Add(prev_slice, prev_value);
+        emulated_blob.push_back(prev_internal_key);
+        time_counter.gc_write += (env_->NowMicros() - start);
+      }
+      ++counter.output_record;
+      if (!status.ok()) {
+        break;
+      }
+      sub_compact->current_blob_output()->meta.UpdateBoundaries(
+          prev_slice, parsed_prev_internal_key.sequence);
+      sub_compact->num_output_records++;
+    } while (false);
+
+    // if (counter.input > 1 && comp.Compare(prev_slice, last_key) == 0 &&
+    //     (last_file_number & curr_file_number) != uint64_t(-1)) {
+    //   assert(last_file_number == uint64_t(-1) ||
+    //          curr_file_number == uint64_t(-1));
+    //   uint64_t valid_file_number = last_file_number & curr_file_number;
+    //   auto pinned_key = ArenaPinSlice(prev_slice, &arena);
+    //   std::lock_guard<std::mutex> lock(conflict_map_mutex);
+    //   conflict_map.emplace(pinned_key, valid_file_number);
+    // }
+    // last_key.assign(prev_slice.data(), prev_slice.size());
+    // last_file_number = curr_file_number;
+
+    // XTODO: not sure whether should use this method
+    //   candidate method: cfd->GetCurrentMutableCFOptions()
+    auto mutable_cf_options = cfd->GetLatestMutableCFOptions();
+    auto ioptions = cfd->ioptions();
+    size_t target_blob_file_size = MaxBlobSize(
+        *mutable_cf_options, ioptions->num_levels, ioptions->compaction_style);
+
+    if (sub_compact->blob_builder->FileSize() > target_blob_file_size) {
+      status = safe_blob_closer();
+      if (!status.ok()) {
+        return status;
+      }
+      
+      status = OpenCompactionOutputBlob(sub_compact);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+
+    if (input->Valid()) {
+      prev_user_key = current_user_key;
+      prev_internal_key.assign(curr_slice.data(), curr_slice.size());
+      parsed_prev_internal_key.user_key = prev_user_key;
+      parsed_prev_internal_key.type = ikey.type;
+      parsed_prev_internal_key.sequence = ikey.sequence;
+      prev_value = input->value();
+      prev_value.pin();
+      {
+        auto start = env_->NowMicros();
+        input->Next();
+        time_counter.merging_iterator_next += (env_->NowMicros() - start);
+      }
+    } else {
       break;
     }
   }
@@ -3572,8 +3965,8 @@ Status CompactionJob::ProcessZNSPartitionGarbageCollectionWithNoTriaging(
   return status;
 }
 
-void CompactionJob::ProcessZNSGarbageCollection(
-    SubcompactionState* sub_compact) {
+void CompactionJob::ProcessZNSGarbageCollection(SubcompactionState* sub_compact,
+                                                bool look_back) {
   assert(sub_compact != nullptr);
   ColumnFamilyData* cfd = sub_compact->compaction->column_family_data();
 
@@ -3607,8 +4000,13 @@ void CompactionJob::ProcessZNSGarbageCollection(
     case kZNSHotGarbageCollection:
     case kZNSWarmGarbageCollection:
     case kZNSColdGarbageCollection:
-      status = ProcessZNSNonPartitionGarbageCollection(sub_compact, cfd,
-                                                       std::move(input));
+      if (look_back) {
+        status = ProcessZNSNonPartitionGarbageCollection(sub_compact, cfd,
+                                                         std::move(input));
+      } else {
+        status = ProcessZNSNonPartitionGarbageCollectionWithNoLookback(
+            sub_compact, cfd, std::move(input));
+      }
       break;
     case kZNSPartitionGarbageCollection:
       // status = ProcessZNSPartitionGarbageCollection(sub_compact, cfd,

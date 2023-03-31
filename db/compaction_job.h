@@ -131,13 +131,17 @@ class CompactionJob {
   Status ProcessZNSNonPartitionGarbageCollection(
       SubcompactionState* sub_compact, ColumnFamilyData* cfd,
       std::unique_ptr<InternalIterator> input);
+  Status ProcessZNSNonPartitionGarbageCollectionWithNoLookback(
+      SubcompactionState* sub_compact, ColumnFamilyData* cfd,
+      std::unique_ptr<InternalIterator> input);
   Status ProcessZNSPartitionGarbageCollection(
       SubcompactionState* sub_compact, ColumnFamilyData* cfd,
       std::unique_ptr<InternalIterator> input);
   Status ProcessZNSPartitionGarbageCollectionWithNoTriaging(
       SubcompactionState* sub_compact, ColumnFamilyData* cfd,
       std::unique_ptr<InternalIterator> input);
-  void ProcessZNSGarbageCollection(SubcompactionState* sub_compact);
+  void ProcessZNSGarbageCollection(SubcompactionState* sub_compact,
+                                   bool look_back);
 
   Status FinishCompactionOutputFile(
       const Status& input_status, SubcompactionState* sub_compact,

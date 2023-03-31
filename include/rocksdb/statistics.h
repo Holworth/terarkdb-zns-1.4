@@ -365,6 +365,9 @@ enum Histograms : uint32_t {
   // The total time spent on output file during a HOT GC task
   ZNS_HOT_GC_WRITE_TOTAL_MICROS,
 
+  // Total time spent on GetKey() of one work
+  ZNS_HOT_GC_GET_KEY,
+
   // Time spent on garbage collection of warm zone
   ZNS_PROCESS_WARM_GC,
 
@@ -373,6 +376,8 @@ enum Histograms : uint32_t {
 
   // The total time spent on output file during a WARM GC task
   ZNS_WARM_GC_WRITE_TOTAL_MICROS,
+
+  ZNS_WARM_GC_GET_KEY,
 
   HISTOGRAM_ENUM_MAX,
 };
