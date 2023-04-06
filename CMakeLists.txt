@@ -4,6 +4,8 @@ enable_language(CXX)
 enable_language(C)
 enable_language(ASM)
 
+set(CMAKE_CXX_STANDARD 17)
+
 if(POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW)
 endif()

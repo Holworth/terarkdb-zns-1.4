@@ -2053,6 +2053,12 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
 void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   assert(sub_compact != nullptr);
 
+  // We ommit all statements related to SetSecondPassIterator for this special
+  // kind of iterator has been deprecated by Bytedance's new version. The
+  // contents that have been commented out includes:
+  //  * Conflict map.
+  //  * Last file number, current file number
+
   uint64_t gc_getkey_time = 0;
 
   StopWatch sw(env_, stats_, GC_PROCESS_TIME);
@@ -2085,35 +2091,35 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   input->SeekToFirst();
 
   Arena arena;
-  std::unordered_map<Slice, uint64_t, SliceHasher> conflict_map;
-  std::mutex conflict_map_mutex;
+  // std::unordered_map<Slice, uint64_t, SliceHasher> conflict_map;
+  // std::mutex conflict_map_mutex;
 
-  auto create_iter = [&](Arena* /* arena */) {
-    return versions_->MakeInputIterator(sub_compact->compaction, nullptr,
-                                        env_options_for_read_, stats_);
-  };
-  auto filter_conflict = [&](const Slice& ikey, const LazyBuffer& value) {
-    std::lock_guard<std::mutex> lock(conflict_map_mutex);
-    auto find = conflict_map.find(ikey);
-    return find != conflict_map.end() && find->second != value.file_number();
-  };
+  // auto create_iter = [&](Arena* /* arena */) {
+  //   return versions_->MakeInputIterator(sub_compact->compaction, nullptr,
+  //                                       env_options_for_read_, stats_);
+  // };
+  // auto filter_conflict = [&](const Slice& ikey, const LazyBuffer& value) {
+  //   std::lock_guard<std::mutex> lock(conflict_map_mutex);
+  //   auto find = conflict_map.find(ikey);
+  //   return find != conflict_map.end() && find->second != value.file_number();
+  // };
 
-  LazyInternalIteratorWrapper second_pass_iter(
-      c_style_callback(create_iter), &create_iter,
-      c_style_callback(filter_conflict), &filter_conflict, nullptr /* arena */,
-      shutting_down_);
+  // LazyInternalIteratorWrapper second_pass_iter(
+  //     c_style_callback(create_iter), &create_iter,
+  //     c_style_callback(filter_conflict), &filter_conflict, nullptr /* arena
+  //     */, shutting_down_);
 
   Status status = OpenCompactionOutputBlob(sub_compact);
   if (!status.ok()) {
     return;
   }
-  sub_compact->blob_builder->SetSecondPassIterator(&second_pass_iter);
+  // sub_compact->blob_builder->SetSecondPassIterator(&second_pass_iter);
 
   Version* input_version = sub_compact->compaction->input_version();
   auto& dependence_map = input_version->storage_info()->dependence_map();
   auto& comp = cfd->internal_comparator();
   std::string last_key;
-  uint64_t last_file_number = uint64_t(-1);
+  // uint64_t last_file_number = uint64_t(-1);
   IterKey iter_key;
   ParsedInternalKey ikey;
 
@@ -2121,6 +2127,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     uint64_t input = 0;
     uint64_t garbage_type = 0;
     uint64_t get_not_found = 0;
+    uint64_t seq_mismatch_not_found = 0;
     uint64_t file_number_mismatch = 0;
   } counter;
   std::vector<std::pair<uint64_t, FileMetaData*>> blob_meta_cache;
@@ -2130,7 +2137,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
   while (status.ok() && !cfd->IsDropped() && input->Valid()) {
     ++counter.input;
     Slice curr_key = input->key();
-    uint64_t curr_file_number = uint64_t(-1);
+    // uint64_t curr_file_number = uint64_t(-1);
     if (!ParseInternalKey(curr_key, &ikey)) {
       status =
           Status::Corruption("ProcessGarbageCollection invalid InternalKey");
@@ -2170,12 +2177,12 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
       LazyBuffer value;
 
       // Monitoring the time for gc_get_key:
-      // 
-      // GetKey returns the latest sequence number of a specified key. All 
-      // obsolete sequence number will be dropped here. 
-      // 
+      //
+      // GetKey returns the latest sequence number of a specified key. All
+      // obsolete sequence number will be dropped here.
+      //
       // However, according to our measurement, the GetKey() call occupies more
-      // than 50% of the total time of this ProcessGarbageCollection() call. 
+      // than 50% of the total time of this ProcessGarbageCollection() call.
       auto start = env_->NowMicros();
       input_version->GetKey(ikey.user_key, iter_key.GetInternalKey(), &s, &type,
                             &seq, &value, *blob_meta);
@@ -2189,7 +2196,8 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
         break;
       } else if (seq != ikey.sequence ||
                  (type != kTypeValueIndex && type != kTypeMergeIndex)) {
-        ++counter.get_not_found;
+        // ++counter.get_not_found;
+        ++counter.seq_mismatch_not_found;
         break;
       }
       status = value.fetch();
@@ -2207,7 +2215,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
         ++counter.file_number_mismatch;
         break;
       }
-      curr_file_number = value.file_number();
+      // curr_file_number = value.file_number();
 
       assert(sub_compact->blob_builder != nullptr);
       assert(sub_compact->current_blob_output() != nullptr);
@@ -2224,17 +2232,17 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
       sub_compact->num_output_records++;
     } while (false);
 
-    if (counter.input > 1 && comp.Compare(curr_key, last_key) == 0 &&
-        (last_file_number & curr_file_number) != uint64_t(-1)) {
-      assert(last_file_number == uint64_t(-1) ||
-             curr_file_number == uint64_t(-1));
-      uint64_t valid_file_number = last_file_number & curr_file_number;
-      auto pinned_key = ArenaPinSlice(curr_key, &arena);
-      std::lock_guard<std::mutex> lock(conflict_map_mutex);
-      conflict_map.emplace(pinned_key, valid_file_number);
-    }
-    last_key.assign(curr_key.data(), curr_key.size());
-    last_file_number = curr_file_number;
+    // if (counter.input > 1 && comp.Compare(curr_key, last_key) == 0 &&
+    //     (last_file_number & curr_file_number) != uint64_t(-1)) {
+    //   assert(last_file_number == uint64_t(-1) ||
+    //          curr_file_number == uint64_t(-1));
+    //   uint64_t valid_file_number = last_file_number & curr_file_number;
+    //   auto pinned_key = ArenaPinSlice(curr_key, &arena);
+    //   std::lock_guard<std::mutex> lock(conflict_map_mutex);
+    //   conflict_map.emplace(pinned_key, valid_file_number);
+    // }
+    // last_key.assign(curr_key.data(), curr_key.size());
+    // last_file_number = curr_file_number;
 
     input->Next();
   }
@@ -2272,12 +2280,14 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
         "[%s] [JOB %d] Table #%" PRIu64 " GC: %" PRIu64
         " inputs from %zd files. %" PRIu64
         " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
-        " get not found, %" PRIu64
-        " file number mismatch ], inheritance tree: %zd -> %zd",
+        " get not found," 
+        "%" PRIu64 " seq mismatch, "
+        "%" PRIu64 " file number mismatch ], inheritance tree: %zd -> %zd",
         cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
         files.size(), counter.input - meta.prop.num_entries,
         sub_compact->compaction->num_antiquation() * 100. / counter.input,
         counter.garbage_type, counter.get_not_found,
+        counter.seq_mismatch_not_found,
         counter.file_number_mismatch,
         meta.prop.inheritance.size() + inheritance_tree_pruge_count,
         meta.prop.inheritance.size());
