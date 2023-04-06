@@ -2476,8 +2476,11 @@ Status DBImpl::GetImpl(const ReadOptions& read_options,
   }
   if (!done) {
     PERF_TIMER_GUARD(get_from_output_files_time);
+    uint64_t seq = uint64_t(-1);
+    bool exists = false;
+    bool value_found = false;
     sv->current->Get(read_options, key, lkey, lazy_val, &s, &merge_context,
-                     &max_covering_tombstone_seq, value_found, nullptr, nullptr,
+                     &max_covering_tombstone_seq, &value_found, &exists, &seq,
                      callback);
     RecordTick(stats_, MEMTABLE_MISS);
   }

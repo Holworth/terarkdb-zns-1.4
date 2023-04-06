@@ -479,6 +479,8 @@ class Compaction {
   std::vector<TableTransientStat>& transient_stat() { return transient_stat_; }
   std::unordered_map<uint64_t, uint64_t>& current_blob_overlap_scores() const;
 
+  mutable uint64_t gc_write_bytes = 0;
+
  private:
   // mark (or clear) all files that are being compacted
   void MarkFilesBeingCompacted(bool mark_as_compacted);

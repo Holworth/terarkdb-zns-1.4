@@ -1072,6 +1072,14 @@ Status BuildPartitionTable(
          counter.sep_warm_count,
          (double)counter.sep_warm_count / counter.total_output_count);
 
+  ROCKS_LOG_INFO(ioptions.info_log,
+                 "[BuildPartitionTable][Output: %lu][Separate Hot: %lu "
+                 "(%.2lf)][Separate Warm: %lu (%.2lf)]",
+                 counter.total_output_count, counter.sep_hot_count,
+                 (double)counter.sep_hot_count / counter.total_output_count,
+                 counter.sep_warm_count,
+                 (double)counter.sep_warm_count / counter.total_output_count);
+
   // Output to event logger and fire events.
   EventHelpers::LogAndNotifyTableFileCreationFinished(
       event_logger, ioptions.listeners, dbname, column_family_name, fname,

@@ -48,6 +48,7 @@
 #include "util/stop_watch.h"
 #include "util/string_util.h"
 #include "util/sync_point.h"
+#include "util/trace_replay.h"
 
 namespace TERARKDB_NAMESPACE {
 
@@ -2220,26 +2221,15 @@ void BlockBasedTableIteratorBase<TBlockIter, TValue>::Prev() {
 template <class TBlockIter, typename TValue>
 void BlockBasedTableIteratorBase<TBlockIter, TValue>::InitDataBlock() {
   BlockHandle data_block_handle = index_iter_->value();
-  BlockHandle next_data_block_handle = BlockHandle::NullBlockHandle();
+  static constexpr size_t k_prefetch_size = 128 * 1024;
+  size_t next_prefetch_offset = 0;
+  size_t next_prefetch_size = 0;
   if (read_options_.open_for_gc && prefetch_async) {
-    // Get the next block handle for prefetching. Remember to move back
-    // to the previous location after triving the handle of next data
-    // block.
-    auto prev_key = index_iter_->key();
-    // In case that moving index_iter_ causes prev_key invalid
-    auto prev_key_str = std::string(prev_key.data(), prev_key.size());
-    index_iter_->Next();
-    if (index_iter_->Valid()) {
-      next_data_block_handle = index_iter_->value();
-      index_iter_->Prev();
-    } else {
-      // index_iter_->Valid() = false means this iterator has reached the
-      // end, calling Prev() will abort. The only way to get back is seeking
-      // to the last key
-      index_iter_->Seek(prev_key_str);
-    }
-    assert(index_iter_->Valid() &&
-           data_block_handle.Equal(index_iter_->value()));
+    // Calculate the data extent to be prefetched asynchronously. We always
+    // prefetch the next 128KiB data.
+    next_prefetch_offset =
+        (data_block_handle.offset() / k_prefetch_size + 1) * k_prefetch_size;
+    next_prefetch_size = k_prefetch_size;
   }
 
   if (!block_iter_points_to_real_block_ ||
@@ -2287,13 +2277,8 @@ void BlockBasedTableIteratorBase<TBlockIter, TValue>::InitDataBlock() {
         /* get_context */ nullptr, s, prefetch_buffer_.get());
     block_iter_points_to_real_block_ = true;
 
-    if (read_options_.open_for_gc && prefetch_async &&
-        !next_data_block_handle.IsNull()) {
-      auto fetch_sz = next_data_block_handle.size() + kBlockTrailerSize;
-      ZnsLog(kMagenta,
-             "BlockBasedInterator::Prefetch next datablock (%llu, %llu)",
-             next_data_block_handle.offset(), fetch_sz);
-      rep->file->PrefetchAsync(next_data_block_handle.offset(), fetch_sz);
+    if (read_options_.open_for_gc && prefetch_async && next_prefetch_size > 0) {
+      rep->file->PrefetchAsync(next_prefetch_offset, next_prefetch_size);
     }
   }
 }
@@ -2586,6 +2571,9 @@ Status BlockBasedTable::Get(const ReadOptions& read_options, const Slice& key,
   if (!rep_->filter_entry.IsSet()) {
     filter_entry.Release(rep_->table_options.block_cache.get());
   }
+  // if (get_context->State() == GetContext::kNotFound) {
+  //   ZnsLog(kYellow, "seems a missing key");
+  // }
   return s;
 }
 

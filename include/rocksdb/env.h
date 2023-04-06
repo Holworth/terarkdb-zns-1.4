@@ -27,6 +27,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <optional>
 
 #include "db/compaction_iteration_stats.h"
 #include "fs/log.h"
@@ -217,13 +218,22 @@ struct EnvOptions {
   bool enable_hot_separation = true;
 };
 
+enum OracleAddKeyStatus {
+  kNewlyAdded,
+  kUpdated,
+  kRejected,
+};
 class Oracle {
  public:
   virtual ~Oracle(){};
 
   virtual void MergeKeys(std::unordered_map<std::string, uint64_t>& update) = 0;
   virtual KeyType ProbeKeyType(const std::string& key, uint64_t occrrence) = 0;
-  virtual void AddKey(const std::string& key, uint64_t occurrence) = 0;
+
+  // true: key is successfully added
+  // false: key already exists and is updated
+  // none: the key is cold and not added
+  virtual OracleAddKeyStatus AddKey(const std::string& key, uint64_t occurrence) = 0;
   virtual void UpdateStats() = 0;
   virtual void ReportProbeStats() = 0;
 };

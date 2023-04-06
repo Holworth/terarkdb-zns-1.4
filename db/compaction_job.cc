@@ -1563,7 +1563,8 @@ void CompactionJob::ProcessCompaction(SubcompactionState* sub_compact) {
       } else {
         ProcessGarbageCollection(sub_compact);
       }
-    } break;
+      break;
+    } 
     default:
       assert(false);
       break;
@@ -2407,22 +2408,7 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
     auto& inputs = *sub_compact->compaction->inputs();
     assert(inputs.size() == 1 && inputs.front().level == -1);
     auto& files = inputs.front().files;
-    // ROCKS_LOG_INFO(
-    //     db_options_.info_log,
-    //     "[%s] [JOB %d] Table #%" PRIu64 " ZNSGC: %" PRIu64
-    //     " inputs from %zd files. %" PRIu64
-    //     " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
-    //     " get not found, %" PRIu64
-    //     " file number mismatch ], inheritance tree: %zd -> %zd",
-    //     cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
-    //     files.size(), counter.input - meta.prop.num_entries,
-    //     sub_compact->compaction->num_antiquation() * 100. / counter.input,
-    //     counter.garbage_type, counter.get_not_found,
-    //     counter.file_number_mismatch,
-    //     meta.prop.inheritance.size() + inheritance_tree_pruge_count,
-    //     meta.prop.inheritance.size());
-
-    // Use our own GC log formats
+    // (xiongziwei): Use our own GC log formats
     ROCKS_LOG_INFO(
         db_options_.info_log,
         "[%s] [JOB %d] Table #%" PRIu64
@@ -2489,6 +2475,8 @@ void CompactionJob::ProcessGarbageCollection(SubcompactionState* sub_compact) {
                       time_counter.merging_iterator_next);
   stats_->measureTime(ZNS_PARTITION_GC_WRITE_TOTAL_MICROS,
                       time_counter.gc_write);
+
+  sub_compact->compaction->gc_write_bytes += sub_compact->total_bytes;
 }
 
 // TODO: Add a flag to control if validaty-checking is enabled, which might
@@ -2875,29 +2863,10 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollectionWithNoLookback(
   std::unordered_map<std::string, uint64_t> occurrence_map;
 
   Arena arena;
-  // std::unordered_map<Slice, uint64_t, SliceHasher> conflict_map;
-  // std::mutex conflict_map_mutex;
-  //
-  // auto create_iter = [&](Arena* /* arena */) {
-  //   return versions_->MakeInputIterator(sub_compact->compaction, nullptr,
-  //                                       env_options_for_read_);
-  // };
-  // auto filter_conflict = [&](const Slice& ikey, const LazyBuffer& value) {
-  //   std::lock_guard<std::mutex> lock(conflict_map_mutex);
-  //   auto find = conflict_map.find(ikey);
-  //   return find != conflict_map.end() && find->second != value.file_number();
-  // };
-  //
-  // LazyInternalIteratorWrapper second_pass_iter(
-  //     c_style_callback(create_iter), &create_iter,
-  //     c_style_callback(filter_conflict), &filter_conflict, nullptr /* arena
-  //     */, shutting_down_);
-  //
   Status status = OpenCompactionOutputBlob(sub_compact);
   if (!status.ok()) {
     return status;
   }
-  // sub_compact->blob_builder->SetSecondPassIterator(&second_pass_iter);
 
   Version* input_version = sub_compact->compaction->input_version();
   auto& dependence_map = input_version->storage_info()->dependence_map();
@@ -3000,7 +2969,9 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollectionWithNoLookback(
       // been written to a blob file yet, so execute the following
       // lines one more time
       if (current_user_key == prev_user_key) {
+        auto start = env_->NowMicros();
         input->Next();
+        time_counter.merging_iterator_next += (env_->NowMicros() - start);
         continue;
       }
     }
@@ -3167,20 +3138,6 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollectionWithNoLookback(
     auto& inputs = *sub_compact->compaction->inputs();
     assert(inputs.size() == 1 && inputs.front().level == -1);
     auto& files = inputs.front().files;
-    // ROCKS_LOG_INFO(
-    //     db_options_.info_log,
-    //     "[%s] [JOB %d] Table #%" PRIu64 " GC: %" PRIu64
-    //     " inputs from %zd files. %" PRIu64
-    //     " clear, %.2f%% estimation: [ %" PRIu64 " garbage type, %" PRIu64
-    //     " get not found, %" PRIu64
-    //     " file number mismatch ], inheritance tree: %zd -> %zd",
-    //     cfd->GetName().c_str(), job_id_, meta.fd.GetNumber(), counter.input,
-    //     files.size(), counter.input - meta.prop.num_entries,
-    //     sub_compact->compaction->num_antiquation() * 100. / counter.input,
-    //     counter.garbage_type, counter.get_not_found,
-    //     counter.file_number_mismatch,
-    //     meta.prop.inheritance.size() + inheritance_tree_pruge_count,
-    //     meta.prop.inheritance.size());
     ROCKS_LOG_INFO(
         db_options_.info_log,
         "[%s] [JOB %d] Table #%" PRIu64
@@ -3234,6 +3191,8 @@ Status CompactionJob::ProcessZNSNonPartitionGarbageCollectionWithNoLookback(
                         time_counter.merging_iterator_next);
     stats_->measureTime(ZNS_WARM_GC_WRITE_TOTAL_MICROS, time_counter.gc_write);
   }
+
+  sub_compact->compaction->gc_write_bytes += sub_compact->total_bytes;
 
   return status;
 }

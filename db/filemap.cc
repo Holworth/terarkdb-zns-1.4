@@ -14,7 +14,7 @@ Status FileMap::AddNode(FileMetaData *fmeta, uint64_t version_num) {
   if (nodes_.find(file_number) != nodes_.end()) {
     return Status::Corruption("Node to add already exists");
   }
-  ZnsLog(kCyan, "FileMap::AddNode %lu.sst", fmeta->fd.GetNumber());
+  // ZnsLog(kCyan, "FileMap::AddNode %lu.sst", fmeta->fd.GetNumber());
   nodes_.emplace(file_number, std::make_shared<MapNode>(fmeta, version_num));
   return Status::OK();
 }
@@ -47,8 +47,8 @@ Status FileMap::AddDerivedNode(uint64_t p_filenum, FileMetaData *c,
 
   // TODO: May sort the children nodes based on their key ranges
 
-  ZnsLog(kCyan, "FileMap::AddDerivedNode %llu.sst -> %llu.sst", p_filenum,
-         c_filenum);
+  // ZnsLog(kCyan, "FileMap::AddDerivedNode %llu.sst -> %llu.sst", p_filenum,
+  //        c_filenum);
   return Status::OK();
 }
 

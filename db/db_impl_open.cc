@@ -255,6 +255,8 @@ Status DBImpl::NewDB() {
   {
     std::unique_ptr<WritableFile> file;
     EnvOptions env_options = env_->OptimizeForManifestWrite(env_options_);
+    // Set the type so that the allocation are directed to conventional SSD
+    env_options.db_file_type = DBFileType::kManifest;
     s = NewWritableFile(env_, manifest, &file, env_options);
     if (!s.ok()) {
       return s;

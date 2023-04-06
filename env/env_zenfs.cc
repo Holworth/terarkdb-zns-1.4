@@ -11,6 +11,7 @@
 #include "rocksdb/env.h"
 #include "rocksdb/file_system.h"
 #include "rocksdb/slice.h"
+#include "rocksdb/statistics.h"
 #include "rocksdb/table_properties.h"
 #include "rocksdb/terark_namespace.h"
 
@@ -215,13 +216,27 @@ class ZenFSOracle : public Oracle {
     }
     // evict_rate_ * update.size() is a very huge number. We set a hard-limit
     // for the number of keys to process
-    auto check_key_cnt = std::min(update.size() * evict_rate_, 1000.0);
+    auto check_key_cnt = std::min(update.size() * evict_rate_, 2000.0);
+    // auto check_key_cnt = std::min(update.size() * 1.0, limit_ * evict_rate_);
     auto high_occurrence = sorted.rbegin();
+
+    uint64_t newly_added = 0, updated = 0, rejected = 0;
     for (int i = 0; i < check_key_cnt && high_occurrence != sorted.rend();) {
       // ZnsLog(kYellow, "Process keys with occurrrence of %lu",
       //        high_occurrence->first);
       for (auto& k : high_occurrence->second) {
-        AddKey(*k, high_occurrence->first);
+        auto s = AddKey(*k, high_occurrence->first);
+        switch (s) {
+          case kNewlyAdded:
+            ++newly_added;
+            break;
+          case kUpdated:
+            ++updated;
+            break;
+          case kRejected:
+            ++rejected;
+            break;
+        }
         if ((++i) >= check_key_cnt) {
           break;
         }
@@ -231,10 +246,14 @@ class ZenFSOracle : public Oracle {
 
     UpdateStats();
 
-    // ZnsLog(kYellow,
-    //        "After merging keys, low occ: %lu, high occ: %lu, avg occ: %lf",
-    //        stats_.min_occurrence, stats_.max_occurrence,
-    //        stats_.average_occurrence);
+    ZnsLog(kYellow,
+           "After merging keys, low occ: %lu, high occ: %lu, avg occ: %lf",
+           stats_.min_occurrence, stats_.max_occurrence,
+           stats_.average_occurrence);
+    ZnsLog(kYellow,
+           "%lu are added, %lu are updated, %lu are rejected. Total warm keys: "
+           "%lu",
+           newly_added, updated, rejected, key_set_.size());
     // merged_ = true;
     // std::vector<std::pair<Slice, uint64_t>> sorted;
     // for (const auto& i : update) {
@@ -281,7 +300,11 @@ class ZenFSOracle : public Oracle {
       // std::cout << "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<< "
       //              "Leaving ProbeKeyType Hot\n";
 
-      return KeyType::Hot();
+      // (kqh): 2023.4.2: Displace hot with warm because we want to merge hot
+      // and warm zone for a better accumulation rate.
+
+      // return KeyType::Hot();
+      return KeyType::Warm();
     }
 
     if (key_set_.size() < limit_) {
@@ -307,10 +330,11 @@ class ZenFSOracle : public Oracle {
     }
   }
 
-  void AddKey(const std::string& key, uint64_t occurrence) override {
+  OracleAddKeyStatus AddKey(const std::string& key,
+                            uint64_t occurrence) override {
     if (key_set_.size() >= limit_) {
       if (occurrence < stats_.min_occurrence) {
-        return;
+        return kRejected;
       } else {
         if (auto it = key_set_.find(key); it == key_set_.end()) {
           Evict();
@@ -330,6 +354,7 @@ class ZenFSOracle : public Oracle {
       map_lock.lock();
       occurrence_map_[occurrence].insert(key);
       map_lock.unlock();
+      return kNewlyAdded;
     } else {
       auto pair = key_set_.find(key);
 
@@ -347,9 +372,8 @@ class ZenFSOracle : public Oracle {
       map_lock.unlock();
 
       pair->second->hotness = ProbeKeyType(key, pair->second->occurrence);
-      // });
+      return kUpdated;
     }
-    return;
   }
 
   void UpdateStats() override {
@@ -458,9 +482,9 @@ class ZenFSOracle : public Oracle {
   };
 
   struct KeyHintSetStats {
-    uint64_t max_occurrence = 10;
-    uint64_t min_occurrence = 10;
-    double average_occurrence = 10.0;
+    uint64_t max_occurrence = 9;
+    uint64_t min_occurrence = 9;
+    double average_occurrence = 9.0;
   } stats_;
   uint64_t global_version_;
   uint64_t limit_;

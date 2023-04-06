@@ -902,10 +902,6 @@ class VersionBuilder::Rep {
       }
     }
 
-    if (edit->GetNewFiles().size() == 2) {
-      ZnsLog(kYellow, "Seems to be a GC");
-    }
-
     // Add new files
     for (auto& pair : edit->GetNewFiles()) {
       int level = pair.first;
