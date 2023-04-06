@@ -1,0 +1,3 @@
+[submodule "third-party/zenfs"]
+	path = third-party/zenfs
+	url = git@github.com:westerndigitalcorporation/zenfs.git

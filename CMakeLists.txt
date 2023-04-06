@@ -75,6 +75,8 @@ if (WITH_WINDOWS_UTF8_FILENAMES)
   add_definitions(-DROCKSDB_WINDOWS_UTF8_FILENAMES)
 endif()
 option(ROCKSDB_BUILD_SHARED "Build shared versions of the RocksDB libraries" ON)
+option(WITH_ZENFS "build with experimental zenfs" ON)
+
 
 if ($ENV{CIRCLECI})
   message(STATUS "Build for CircieCI env, a few tests may be disabled")
@@ -175,6 +177,14 @@ else()
     list(APPEND THIRDPARTY_LIBS zstd::zstd)
   endif()
 endif()
+
+if(WITH_ZENFS)
+  include_directories(third-party/zenfs)
+  FILE(GLOB ZENFS_CMAKE_FILE "third-party/zenfs/CMakeLists.txt")
+  IF(EXISTS ${ZENFS_CMAKE_FILE})
+    ADD_SUBDIRECTORY(third-party/zenfs)
+  ENDIF()
+ENDIF()
 
 option(WITH_MD_LIBRARY "build with MD" ON)
 if(WIN32 AND MSVC)
@@ -416,6 +426,14 @@ if(WITH_TBB)
   find_package(TBB REQUIRED)
   add_definitions(-DTBB)
   list(APPEND THIRDPARTY_LIBS TBB::TBB)
+endif()
+
+if(WITH_ZENFS)
+  if(DEFINED zenfs_LIBS)
+    list(APPEND THIRDPARTY_LIBS ${zenfs_LIBS})
+  else()
+    list(APPEND THIRDPARTY_LIBS zbd)
+  endif()
 endif()
 
 # Stall notifications eat some performance from inserts
@@ -1051,6 +1069,19 @@ else()
     env/env_posix.cc
     env/fs_posix.cc
     env/io_posix.cc)
+  if(WITH_ZENFS)
+    list(APPEND SOURCES env/env_zenfs.cc)
+    if(DEFINED zenfs_SOURCES)
+      foreach(SOURCE_FILE ${zenfs_SOURCES})
+        list(APPEND SOURCES "third-party/zenfs/${SOURCE_FILE}")
+	    endforeach()
+    else()
+      list(APPEND SOURCES
+        third-party/zenfs/fs/fs_zenfs.cc
+        third-party/zenfs/fs/io_zenfs.cc
+        third-party/zenfs/fs/zbd_zenfs.cc)
+    endif()
+  endif()
 endif()
 
 if(USE_FOLLY_LITE)
@@ -1172,7 +1203,7 @@ endif()
 
 option(WITH_JNI "build with JNI" OFF)
 # Tests are excluded from Release builds
-CMAKE_DEPENDENT_OPTION(WITH_TESTS "build with tests" ON
+CMAKE_DEPENDENT_OPTION(WITH_TESTS "build with tests" OFF
   "CMAKE_BUILD_TYPE STREQUAL Debug" OFF)
 option(WITH_BENCHMARK_TOOLS "build with benchmarks" ON)
 option(WITH_CORE_TOOLS "build with ldb and sst_dump" ON)
@@ -1624,4 +1655,19 @@ endif()
 option(WITH_BENCHMARK "build benchmark tests" OFF)
 if(WITH_BENCHMARK)
   add_subdirectory(${PROJECT_SOURCE_DIR}/microbench/)
+endif()
+
+if(WITH_ZENFS)
+  include_directories(third-party/zenfs)
+  add_executable(zenfs${ARTIFACT_SUFFIX} third-party/zenfs/util/zenfs.cc
+          $<TARGET_OBJECTS:testharness>)
+  target_link_libraries(zenfs${ARTIFACT_SUFFIX} gtest ${ROCKSDB_STATIC_LIB})
+
+  FILE(GLOB ZENFS_TESTS third-party/zenfs/test/*_test.cc)
+  foreach(sourcefile ${ZENFS_TESTS})
+    get_filename_component(exename ${sourcefile} NAME_WE)
+    add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile}
+            $<TARGET_OBJECTS:testharness>)
+    target_link_libraries(${exename}${ARTIFACT_SUFFIX} gtest ${ROCKSDB_STATIC_LIB})
+  endforeach(sourcefile ${BENCHMARKS})
 endif()
