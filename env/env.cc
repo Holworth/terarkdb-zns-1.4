@@ -368,6 +368,8 @@ class LegacyFileSystemWrapper : public FileSystem {
   // Return the target to which this Env forwards all calls
   Env* target() const { return target_; }
 
+  void Dump() override { printf("Legacy File System Dumps Nichts\n"); };
+
   // The following text is boilerplate that forwards all methods to target()
   IOStatus NewSequentialFile(const std::string& f, const FileOptions& file_opts,
                              std::unique_ptr<FSSequentialFile>* r,

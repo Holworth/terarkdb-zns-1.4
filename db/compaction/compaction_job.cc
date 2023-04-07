@@ -1002,12 +1002,10 @@ void CompactionJob::NotifyOnSubcompactionBegin(
     listener->OnSubcompactionBegin(info);
   }
   info.status.PermitUncheckedError();
-
 }
 
 void CompactionJob::NotifyOnSubcompactionCompleted(
     SubcompactionState* sub_compact) {
-
   if (db_options_.listeners.empty()) {
     return;
   }
@@ -1217,6 +1215,10 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
 
   // TODO: BlobDB to support output_to_penultimate_level compaction, which needs
   //  2 builders, so may need to move to `CompactionOutputs`
+
+  // Set the blob file type to be kCompactionOutputBlob
+  auto blob_file_options = file_options_;
+  blob_file_options.io_options.type = IOType::kCompactionOutputBlob;
   std::unique_ptr<BlobFileBuilder> blob_file_builder(
       (mutable_cf_options->enable_blob_files &&
        sub_compact->compaction->output_level() >=
@@ -1224,7 +1226,7 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
           ? new BlobFileBuilder(
                 versions_, fs_.get(),
                 sub_compact->compaction->immutable_options(),
-                mutable_cf_options, &file_options_, db_id_, db_session_id_,
+                mutable_cf_options, &blob_file_options, db_id_, db_session_id_,
                 job_id_, cfd->GetID(), cfd->GetName(), Env::IOPriority::IO_LOW,
                 write_hint_, io_tracer_, blob_callback_,
                 BlobFileCreationReason::kCompaction, &blob_file_paths,
@@ -1778,6 +1780,11 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
   fo_copy.temperature = temperature;
 
   Status s;
+  if (fname.find(".sst") != std::string::npos) {
+    fo_copy.io_options.type = IOType::kCompactionOutputSST;
+  } else if (fname.find(".blob") != std::string::npos) {
+    fo_copy.io_options.type = IOType::kCompactionOutputBlob;
+  }
   IOStatus io_s = NewWritableFile(fs_.get(), fname, &writable_file, fo_copy);
   s = io_s;
   if (sub_compact->io_status.ok()) {
@@ -1899,7 +1906,6 @@ void CopyPrefix(const Slice& src, size_t prefix_length, std::string* dst) {
   dst->assign(src.data(), length);
 }
 }  // namespace
-
 
 void CompactionJob::UpdateCompactionStats() {
   assert(compact_);

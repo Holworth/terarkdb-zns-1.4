@@ -31,6 +31,7 @@
 #include "options/options_helper.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
+#include "rocksdb/file_system.h"
 #include "rocksdb/iterator.h"
 #include "rocksdb/options.h"
 #include "rocksdb/table.h"
@@ -144,9 +145,19 @@ Status BuildTable(
       std::unique_ptr<FSWritableFile> file;
 #ifndef NDEBUG
       bool use_direct_writes = file_options.use_direct_writes;
+
+      // Set the type of files accordingly:
+      auto mut_file_options = file_options;
+      if (fname.find(".sst") != std::string::npos) {
+        mut_file_options.io_options.type = IOType::kFlushSST;
+      }
+      if (fname.find(".blob") != std::string::npos) {
+        mut_file_options.io_options.type = IOType::kFlushBlob;
+      }
+
       TEST_SYNC_POINT_CALLBACK("BuildTable:create_file", &use_direct_writes);
 #endif  // !NDEBUG
-      IOStatus io_s = NewWritableFile(fs, fname, &file, file_options);
+      IOStatus io_s = NewWritableFile(fs, fname, &file, mut_file_options);
       assert(s.ok());
       s = io_s;
       if (io_status->ok()) {
@@ -180,17 +191,21 @@ Status BuildTable(
         ioptions.logger, true /* internal key corruption is not ok */,
         snapshots.empty() ? 0 : snapshots.back(), snapshot_checker);
 
+    // Set the file type accordingly
+    auto blob_file_options = file_options;
+    blob_file_options.io_options.type = IOType::kFlushBlob;
     std::unique_ptr<BlobFileBuilder> blob_file_builder(
         (mutable_cf_options.enable_blob_files &&
          tboptions.level_at_creation >=
              mutable_cf_options.blob_file_starting_level &&
          blob_file_additions)
             ? new BlobFileBuilder(
-                  versions, fs, &ioptions, &mutable_cf_options, &file_options,
-                  tboptions.db_id, tboptions.db_session_id, job_id,
-                  tboptions.column_family_id, tboptions.column_family_name,
-                  io_priority, write_hint, io_tracer, blob_callback,
-                  blob_creation_reason, &blob_file_paths, blob_file_additions)
+                  versions, fs, &ioptions, &mutable_cf_options,
+                  &blob_file_options, tboptions.db_id, tboptions.db_session_id,
+                  job_id, tboptions.column_family_id,
+                  tboptions.column_family_name, io_priority, write_hint,
+                  io_tracer, blob_callback, blob_creation_reason,
+                  &blob_file_paths, blob_file_additions)
             : nullptr);
 
     const std::atomic<bool> kManualCompactionCanceledFalse{false};

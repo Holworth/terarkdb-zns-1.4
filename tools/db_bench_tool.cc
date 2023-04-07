@@ -3760,6 +3760,9 @@ class Benchmark {
           static_cast_with_check<SimCache>(cache_.get())->ToString().c_str());
     }
 
+    // Dump the status
+    db_.db->GetEnv()->Dump();
+
     if (FLAGS_use_secondary_db) {
       fprintf(stdout, "Secondary instance updated  %" PRIu64 " times.\n",
               secondary_db_updates_);

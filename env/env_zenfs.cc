@@ -191,6 +191,8 @@ class ZenfsEnv : public EnvWrapper {
     return NewZenFS(&fs_, zdb_path, metrics);
   }
 
+  void Dump() override { fs_->Dump(); }
+
   void Dump() override {
     fs_->Dump();
   }

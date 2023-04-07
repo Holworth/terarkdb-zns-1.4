@@ -34,6 +34,7 @@
 #include "rocksdb/options.h"
 #include "rocksdb/table.h"
 #include "rocksdb/thread_status.h"
+#include "rocksdb/types.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -77,6 +78,14 @@ enum class IOType : uint8_t {
   kLog,
   kUnknown,
   kInvalid,
+
+  // More IO type information
+  kSSTFile,
+  kBlobFile,
+  kFlushSST,
+  kFlushBlob,
+  kCompactionOutputSST,
+  kCompactionOutputBlob
 };
 
 // Per-request options that can be passed down to the FileSystem
@@ -288,6 +297,8 @@ class FileSystem : public Customizable {
   // Return a default FileSystem suitable for the current operating
   // system.
   static std::shared_ptr<FileSystem> Default();
+
+  virtual void Dump() {}
 
   // Handles the event when a new DB or a new ColumnFamily starts using the
   // specified data paths.
@@ -1323,6 +1334,8 @@ class FileSystemWrapper : public FileSystem {
   // Initialize an EnvWrapper that delegates all calls to *t
   explicit FileSystemWrapper(const std::shared_ptr<FileSystem>& t);
   ~FileSystemWrapper() override {}
+
+  void Dump() override { target_->Dump(); }
 
   // Return the target to which this Env forwards all calls
   FileSystem* target() const { return target_.get(); }
