@@ -632,7 +632,7 @@ IOStatus ZoneFile::SparseAppend(char* sparse_buffer, uint32_t data_size) {
 /* Assumes that data and size are block aligned */
 IOStatus ZoneFile::Append(void* data, int data_size) {
   uint32_t left = data_size;
-  uint32_t wr_size, offset = 0;
+  uint32_t wr_size = 0, offset = 0;
   IOStatus s = IOStatus::OK();
 
   if (!active_zone_) {

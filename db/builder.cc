@@ -145,6 +145,8 @@ Status BuildTable(
       std::unique_ptr<FSWritableFile> file;
 #ifndef NDEBUG
       bool use_direct_writes = file_options.use_direct_writes;
+      TEST_SYNC_POINT_CALLBACK("BuildTable:create_file", &use_direct_writes);
+#endif  // !NDEBUG
 
       // Set the type of files accordingly:
       auto mut_file_options = file_options;
@@ -154,9 +156,6 @@ Status BuildTable(
       if (fname.find(".blob") != std::string::npos) {
         mut_file_options.io_options.type = IOType::kFlushBlob;
       }
-
-      TEST_SYNC_POINT_CALLBACK("BuildTable:create_file", &use_direct_writes);
-#endif  // !NDEBUG
       IOStatus io_s = NewWritableFile(fs, fname, &file, mut_file_options);
       assert(s.ok());
       s = io_s;
