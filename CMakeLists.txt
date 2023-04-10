@@ -885,7 +885,7 @@ if(WIN32)
       if(DEFINED zenfs_SOURCES)
         foreach(SOURCE_FILE ${zenfs_SOURCES})
           list(APPEND SOURCES "third-party/zenfs/${SOURCE_FILE}")
-	endforeach()
+	      endforeach()
       else()
         list(APPEND SOURCES
           third-party/zenfs/fs/fs_zenfs.cc
