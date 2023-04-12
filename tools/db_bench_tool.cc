@@ -135,7 +135,7 @@ DEFINE_string(
     "randomtransaction,"
     "randomreplacekeys,"
     "timeseries,"
-    "ycsb_a, ycsb_b, ycsb_c",
+    "ycsb_load, ycsb_a, ycsb_b, ycsb_c, ycsb_d, ycsb_e",
 
     "Comma-separated list of operations to run in the specified"
     " order. Available benchmarks:\n"
@@ -2334,7 +2334,7 @@ class Benchmark {
   int64_t readwrites_;
   int64_t merge_keys_;
   bool report_file_operations_;
-  enum YCSBBenchmarkType { YCSB_LOAD, YCSB_A, YCSB_B, YCSB_C, YCSB_NONE };
+  enum YCSBBenchmarkType { YCSB_LOAD, YCSB_A, YCSB_B, YCSB_C, YCSB_D, YCSB_E, YCSB_NONE };
   struct BenchmarkProperty {
     double update_prop;
     double read_prop;
@@ -2354,6 +2354,10 @@ class Benchmark {
         return {0.05, 0.95, 0.0, 0.0};
       case YCSB_C:
         return {0.0, 1.0, 0.0, 0.0};
+      case YCSB_D:
+        return {0.0, 0.95, 0.05, 0.0};
+      case YCSB_E:
+        return {0.0, 0.0, 0.05, 0.95};
       default:
         return {0.0, 0.0, 0.0, 0.0};
     }
@@ -2994,6 +2998,12 @@ class Benchmark {
       } else if (name == "ycsb_c") {
         method = &Benchmark::YCSBBenchmarkC;
         ycsb_type_ = YCSB_C;
+      } else if (name == "ycsb_d") {
+        method = &Benchmark::YCSBBenchmarkD;
+        ycsb_type_ = YCSB_D;
+      } else if (name == "ycsb_e") {
+        method = &Benchmark::YCSBBenchmarkE;
+        ycsb_type_ = YCSB_E;
       } else if (name == "readreverse") {
         method = &Benchmark::ReadReverse;
       } else if (name == "readrandom") {
@@ -4157,7 +4167,7 @@ class Benchmark {
   void WriteRandom(ThreadState* thread) { DoWrite(thread, RANDOM); }
 
   void DoYCSBBenchmark(ThreadState* thread, YCSBBenchmarkType type) {
-    const int test_duration = FLAGS_duration;
+    int test_duration = FLAGS_duration;
     if (FLAGS_num_op == -1) {
       // Num op is not set yet, set it to be multiple
       // key number
@@ -4189,6 +4199,10 @@ class Benchmark {
     key_generator.reset(new ycsb::ScrambledZipfianGenerator(num_ + new_key));
     // key_generator = thread->ycsb_generator;
 
+    if (type == YCSB_E) {
+      test_duration = 500;
+    }
+
     Duration duration(test_duration, num_ops, num_ops);
 
     if (num_ != FLAGS_num) {
@@ -4211,6 +4225,8 @@ class Benchmark {
 
     int64_t stage = 0;
     // int64_t num_written = 0;
+    int64_t scan = 0;
+    int64_t scan_seek = 0;
 
     while (!duration.Done(entries_per_batch_)) {
       if (duration.GetStage() != stage) {
@@ -4300,7 +4316,27 @@ class Benchmark {
           thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, kRead);
           break;
         }
-        // TODO(kqh): Add Scan support
+        case SCAN: {
+          ++scan;
+          ReadOptions scan_readoption;
+          auto iter = db_.db->NewIterator(scan_readoption);
+          iter->Seek(key);
+          const int kScanDistance = 100;
+          for (int i = 0; i < kScanDistance; ++i) {
+            if (iter->Valid()) {
+              ++scan_seek;
+              iter->Next();
+            } else {
+              break;
+            }
+          }
+          thread->stats.FinishedOps(db_with_cfh, db_with_cfh->db, 1, kSeek);
+          if (scan > 0 && scan % 1000 == 0) {
+            std::cout << "Finish scan: " << scan
+                      << " Average distance: " << scan_seek / scan << std::endl;
+          }
+          break;
+        }
         default:
           assert(false);
       }
@@ -4348,6 +4384,10 @@ class Benchmark {
   void YCSBBenchmarkB(ThreadState* thread) { DoYCSBBenchmark(thread, YCSB_B); }
 
   void YCSBBenchmarkC(ThreadState* thread) { DoYCSBBenchmark(thread, YCSB_C); }
+
+  void YCSBBenchmarkD(ThreadState* thread) { DoYCSBBenchmark(thread, YCSB_D); }
+
+  void YCSBBenchmarkE(ThreadState* thread) { DoYCSBBenchmark(thread, YCSB_E); }
 
   void WriteUniqueRandom(ThreadState* thread) {
     DoWrite(thread, UNIQUE_RANDOM);
