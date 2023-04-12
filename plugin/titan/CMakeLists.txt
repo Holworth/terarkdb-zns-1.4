@@ -65,11 +65,14 @@ if(WITH_ZENFS)
   list(APPEND SOURCES
     third-party/zenfs/fs/fs_zenfs.cc
     third-party/zenfs/fs/io_zenfs.cc
+    third-party/zenfs/fs/zbdlib_zenfs.cc
+    third-party/zenfs/fs/zonefs_zenfs.cc
     third-party/zenfs/fs/zbd_zenfs.cc)
 endif()
 
 
-add_library(titan STATIC ${SOURCES} $<TARGET_OBJECTS:titan_build_version>)
+# add_library(titan STATIC ${SOURCES} $<TARGET_OBJECTS:titan_build_version>)
+add_library(titan SHARED ${SOURCES} $<TARGET_OBJECTS:titan_build_version>)
 
 option(WITH_TITAN_TESTS "Build with tests." ON)
 option(WITH_TITAN_TOOLS "Build with tools." ON)
@@ -240,13 +243,13 @@ if(WITH_ZENFS)
   include_directories(third-party/zenfs)
   add_executable(zenfs${ARTIFACT_SUFFIX} third-party/zenfs/util/zenfs.cc
           $<TARGET_OBJECTS:testharness>)
-  target_link_libraries(zenfs${ARTIFACT_SUFFIX} gtest ${ROCKSDB_STATIC_LIB})
+  target_link_libraries(zenfs${ARTIFACT_SUFFIX} gtest ${TOOLS_LIBS})
 
   FILE(GLOB ZENFS_TESTS third-party/zenfs/test/*_test.cc)
   foreach(sourcefile ${ZENFS_TESTS})
     get_filename_component(exename ${sourcefile} NAME_WE)
     add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile}
             $<TARGET_OBJECTS:testharness>)
-    target_link_libraries(${exename}${ARTIFACT_SUFFIX} gtest ${ROCKSDB_STATIC_LIB})
+    target_link_libraries(${exename}${ARTIFACT_SUFFIX} gtest ${TOOLS_LIBS})
   endforeach(sourcefile ${BENCHMARKS})
 endif()

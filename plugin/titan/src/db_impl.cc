@@ -155,9 +155,9 @@ TitanDBImpl::TitanDBImpl(const TitanDBOptions& options,
     // The point of `statistics` is that it can be shared by multiple instances.
     // So we should check if it's a qualified statistics instead of overwriting
     // it.
-    db_options_.statistics->getTickerCount(TITAN_TICKER_ENUM_MAX - 1);
+    db_options_.statistics->getTickerCount(TICKER_ENUM_MAX - 1);
     HistogramData data;
-    db_options_.statistics->histogramData(TITAN_HISTOGRAM_ENUM_MAX - 1, &data);
+    db_options_.statistics->histogramData(HISTOGRAM_ENUM_MAX - 1, &data);
     stats_.reset(new TitanStats(db_options_.statistics.get()));
   }
   blob_manager_.reset(new FileManager(this));

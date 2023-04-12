@@ -6,7 +6,7 @@ namespace rocksdb {
 namespace titandb {
 
 std::shared_ptr<Statistics> CreateDBStatistics();
-
+/*
 enum TickerType : uint32_t {
   TITAN_NUM_GET = TICKER_ENUM_MAX,
   TITAN_NUM_SEEK,
@@ -57,9 +57,11 @@ enum TickerType : uint32_t {
 
   TITAN_TICKER_ENUM_MAX,
 };
+*/
 
 // The order of items listed in Tickers should be the same as
 // the order listed in TickersNameMap
+typedef Tickers TickerType;
 const std::vector<std::pair<TickerType, std::string>> TitanTickersNameMap = {
     {TITAN_NUM_GET, "titandb.num.get"},
     {TITAN_NUM_SEEK, "titandb.num.seek"},
@@ -91,6 +93,7 @@ const std::vector<std::pair<TickerType, std::string>> TitanTickersNameMap = {
     {TITAN_GC_TRIGGER_NEXT, "titandb.gc.trigger.next"},
 };
 
+/*
 enum HistogramType : uint32_t {
   TITAN_KEY_SIZE = HISTOGRAM_ENUM_MAX,
   TITAN_VALUE_SIZE,
@@ -113,7 +116,9 @@ enum HistogramType : uint32_t {
 
   TITAN_HISTOGRAM_ENUM_MAX,
 };
+*/
 
+typedef Histograms HistogramType;
 const std::vector<std::pair<HistogramType, std::string>>
     TitanHistogramsNameMap = {
         {TITAN_KEY_SIZE, "titandb.key.size"},

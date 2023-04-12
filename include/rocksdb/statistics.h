@@ -425,6 +425,54 @@ enum Tickers : uint32_t {
   WARM_FILE_READ_COUNT,
   COLD_FILE_READ_COUNT,
 
+
+  TITAN_NUM_GET,//  = TICKER_ENUM_MAX,
+  TITAN_NUM_SEEK,
+  TITAN_NUM_NEXT,
+  TITAN_NUM_PREV,
+
+  TITAN_BLOB_FILE_NUM_KEYS_WRITTEN,
+  TITAN_BLOB_FILE_NUM_KEYS_READ,
+  TITAN_BLOB_FILE_BYTES_WRITTEN,
+  TITAN_BLOB_FILE_BYTES_READ,
+  TITAN_BLOB_FILE_SYNCED,
+
+  TITAN_GC_NUM_FILES,
+  TITAN_GC_NUM_NEW_FILES,
+
+  // the number of keys overwritten by foreground within the span of GC
+  TITAN_GC_NUM_KEYS_OVERWRITTEN,
+  // the number of keys relocated to new blob file by GC
+  TITAN_GC_NUM_KEYS_RELOCATED,
+  // the number of keys rewritten to LSM tree due to fallback
+  TITAN_GC_NUM_KEYS_FALLBACK,
+  TITAN_GC_BYTES_OVERWRITTEN,
+  TITAN_GC_BYTES_RELOCATED,
+  TITAN_GC_BYTES_FALLBACK,
+
+  TITAN_GC_BYTES_WRITTEN,
+  TITAN_GC_BYTES_READ,
+
+  TITAN_BLOB_CACHE_HIT,
+  TITAN_BLOB_CACHE_MISS,
+
+  // the count of blob file gced due to discardable ratio hit the threshold
+  TITAN_GC_DISCARDABLE,
+  // the count of blob file gced due to small file size
+  TITAN_GC_SMALL_FILE,
+  // the count of blob file marked to be merged by level merge
+  TITAN_GC_LEVEL_MERGE_MARK,
+  // the count of blob file deleted directly by level merge
+  TITAN_GC_LEVEL_MERGE_DELETE,
+
+  TITAN_GC_NO_NEED,
+  // the times of still has blob files remained to be gced after one round of gc
+  TITAN_GC_REMAIN,
+  TITAN_GC_FAILURE,
+  TITAN_GC_SUCCESS,
+  // the times of triggering next round of GC actively
+  TITAN_GC_TRIGGER_NEXT,
+
   TICKER_ENUM_MAX,
 };
 
@@ -528,6 +576,27 @@ enum Histograms : uint32_t {
 
   // Error handler statistics
   ERROR_HANDLER_AUTORESUME_RETRY_COUNT,
+
+  TITAN_KEY_SIZE, // = HISTOGRAM_ENUM_MAX,
+  TITAN_VALUE_SIZE,
+
+  TITAN_GET_MICROS,
+  TITAN_SEEK_MICROS,
+  TITAN_NEXT_MICROS,
+  TITAN_PREV_MICROS,
+
+  TITAN_BLOB_FILE_WRITE_MICROS,
+  TITAN_BLOB_FILE_READ_MICROS,
+  TITAN_BLOB_FILE_SYNC_MICROS,
+  TITAN_MANIFEST_FILE_SYNC_MICROS,
+
+  TITAN_GC_MICROS,
+  TITAN_GC_INPUT_FILE_SIZE,
+  TITAN_GC_OUTPUT_FILE_SIZE,
+
+  TITAN_ITER_TOUCH_BLOB_FILE_COUNT,
+
+  
 
   HISTOGRAM_ENUM_MAX,
 };
