@@ -141,6 +141,7 @@ struct VersionBuilderContextImpl : VersionBuilder::Context {
 
   void UnrefFile(FileMetaData* f) {
     if (f->Unref()) {
+      printf("UnrefFile: %lu.sst unref: %d ", f->fd.GetNumber(), f->refs);
       if (f->table_reader_handle) {
         assert(table_cache != nullptr);
         table_cache->ReleaseHandle(f->table_reader_handle);
@@ -285,6 +286,7 @@ class VersionBuilder::Rep {
         file_number, DependenceItem{file_number, 0, 0, false, level, f, 0});
     // ZnsLog(kYellow, "PutSst(%lu.sst)", f->fd.GetNumber());
     f->Ref();
+    printf("PutSst(): %lu.sst ref: %d ", f->fd.GetNumber(), f->refs);
     // (kqh) ib.second = true means the emplace works successfully, i.e.
     // the f does not exist int the dependence_map_ ever before
     if (ib.second) {
@@ -918,7 +920,7 @@ class VersionBuilder::Rep {
           // data structure into the temporary data structure stored in the
           // context and do the actual update to the dependence tree when
           // SaveTo occurs
-          f->Ref();
+          // f->Ref();
           new_blobs_.emplace_back(f);
           assert(f->fd.GetNumber() != 0);
           // Find all its predecessor files by traversing through the dependence

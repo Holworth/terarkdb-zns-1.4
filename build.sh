@@ -33,9 +33,9 @@ if [ "$WITH_TESTS" == "ON" ]; then
   BUILD_TYPE=Debug
   echo "You are building TerarkDB with tests, so debug mode is enabled"
 else
-  # BUILD_TYPE=RelWithDebInfo
+  BUILD_TYPE=RelWithDebInfo
   # BUILD_TYPE=Debug
-  BUILD_TYPE=Release
+  # BUILD_TYPE=Release
 fi
 
 if test -n "$BUILD_BRANCH"; then

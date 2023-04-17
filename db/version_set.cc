@@ -406,6 +406,8 @@ Version::~Version() {
     for (size_t i = 0; i < storage_info_.files_[level].size(); i++) {
       FileMetaData* f = storage_info_.files_[level][i];
       if (f->Unref()) {
+        printf("~Version(): UnrefFile: %lu.sst unref: %d ", f->fd.GetNumber(),
+               f->refs);
         assert(cfd_ != nullptr);
         uint32_t path_id = f->fd.GetPathId();
         assert(path_id < cfd_->ioptions()->cf_paths.size());
@@ -1991,6 +1993,7 @@ void VersionStorageInfo::AddFile(int level, FileMetaData* f,
   (void)info_log;
 #endif
   f->Ref();
+  printf("AddFile(): %lu.sst ref: %d ", f->fd.GetNumber(), f->refs);
   level_files->push_back(f);
   dependence_map_.emplace(f->fd.GetNumber(), f);
   if (level == -1) {
@@ -2015,14 +2018,15 @@ void VersionStorageInfo::AddFile(int level, FileMetaData* f,
         // (ZNS): We disable this assertion in our multi-stream output design,
         // since each blob file might depend on multiple gc resultant file,
         // which makes the following assertion fails
-        // 
+        //
         // After we disable this assertion, each file has at least one dependent
         // file.We hope this tenuous guarantees can prevent malfunctions
         // from other code snippets.
 
         // assert(dependence_map_.count(file_number) == 0);
         if (exists(exists_args, file_number)) {
-          // ZnsLog(kMagenta, "DependenceMap Add: %lu.sst -> %lu.sst", file_number,
+          // ZnsLog(kMagenta, "DependenceMap Add: %lu.sst -> %lu.sst",
+          // file_number,
           //        f->fd.GetNumber());
           dependence_map_.emplace(file_number, f);
         }
